@@ -49,8 +49,8 @@ const Activation30Days = () => {
       const token = localStorage.getItem('adminToken');
       if (!token) return;
       const url = searchValue
-        ? `http://localhost:5001/api/users?search=${encodeURIComponent(searchValue)}`
-        : 'http://localhost:5001/api/users';
+        ? `${API_URL}/users?search=${encodeURIComponent(searchValue)}`
+        : `${API_URL}/users`;
       const response = await axios.get(url, {
         headers: { Authorization: `Bearer ${token}` }
       });
