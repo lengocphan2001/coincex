@@ -26,7 +26,7 @@ const AdminLogin = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post(`${API_URL}/api/admin/login`, formData);
+      const response = await axios.post(`${API_URL}/admin/login`, formData);
       
       if (response.data.success) {
         // Store the token in localStorage
