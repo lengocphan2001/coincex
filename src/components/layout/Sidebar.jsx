@@ -1,13 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { FaChartLine, FaRobot, FaSignOutAlt } from 'react-icons/fa';
 import { GrUserExpert } from "react-icons/gr";
 import { PiStrategy } from "react-icons/pi";
-
+import { logout } from '../../utils/auth';
 import logo from '../../assets/logo.png';
 
 const Sidebar = ({ isOpen, setIsOpen }) => {
   const location = useLocation();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const menuItems = [
     { path: '/statistics', icon: <FaChartLine />, label: 'Thống kê' },
@@ -15,6 +16,16 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
     { path: '/copy-expert', icon: <GrUserExpert />, label: 'Copy theo CG' },
     { path: '/strategy', icon: <PiStrategy />, label: 'Tạo chiến lược' },
   ];
+
+  const handleLogout = async () => {
+    setIsLoggingOut(true);
+    try {
+      await logout();
+    } catch (error) {
+      console.error('Logout failed:', error);
+      setIsLoggingOut(false);
+    }
+  };
 
   return (
     <div className={`h-full bg-[#0F1A2E] w-[280px] flex flex-col`}>
@@ -58,15 +69,16 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
       {/* Logout Button */}
       <div className="p-4 sm:p-6 border-t border-white/10">
         <button
-          className="flex items-center gap-3 w-full px-4 py-3 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
-          onClick={() => {
-            // Handle logout
-            localStorage.removeItem('authToken');
-            window.location.href = '/login';
-          }}
+          className={`flex items-center gap-3 w-full px-4 py-3 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors ${
+            isLoggingOut ? 'opacity-50 cursor-not-allowed' : ''
+          }`}
+          onClick={handleLogout}
+          disabled={isLoggingOut}
         >
           <FaSignOutAlt className="text-lg" />
-          <span className="text-sm font-medium">Đăng xuất</span>
+          <span className="text-sm font-medium">
+            {isLoggingOut ? 'Đang đăng xuất...' : 'Đăng xuất'}
+          </span>
         </button>
       </div>
     </div>

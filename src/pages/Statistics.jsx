@@ -13,7 +13,7 @@ const ProfitCard = ({ title, amount, isPositive = true }) => (
 const Statistics = () => {
   const profitData = [
     { title: 'Lợi nhuận hiện nay', amount: '315,241.98' },
-    { title: 'Lợi nhuận hiện nay', amount: '315,241.98' },
+    { title: 'Lợi nhuận hôm nay', amount: '315,241.98' },
     { title: 'Lợi nhuận tuần này', amount: '-315,241.98', isPositive: false },
     { title: 'Lợi nhuận tuần trước', amount: '315,241.98' }
   ];

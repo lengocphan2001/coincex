@@ -1,0 +1,1 @@
+export const BINANCE_WSS_URL = 'wss://stream.binance.com:9443'; 
