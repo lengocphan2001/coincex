@@ -99,7 +99,7 @@ const CopyAi = () => {
 
       const requiredLength = getPatternLength(selectedStrategy.follow_candle);
 
-      const response = await axios.get(`${API_URL}/klines`, {
+      const response = await axios.get(`https://api.binance.com/api/v3/klines`, {
         params: {
           symbol: 'BTCUSDT',
           interval: '1m',
@@ -137,7 +137,7 @@ const CopyAi = () => {
             }
             console.log('Candle close time:', new Date(candleCloseTime).toLocaleTimeString());
 
-            const response = await axios.get(`${API_URL}/klines`, {
+            const response = await axios.get(`https://api.binance.com/api/v3/klines`, {
               params: {
                 symbol: 'BTCUSDT',
                 interval: '1m',
