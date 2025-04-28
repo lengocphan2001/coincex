@@ -294,7 +294,7 @@ const CopyAi = () => {
   };
 
   const renderTradeRow = (trade, source) => (
-    <tr className="border-b border-white/10">
+    <tr key={trade.order_code} className="border-b border-white/10">
       <td className="py-4 px-4">
         <div className="text-white/70 text-sm">
           {formatDateTime(trade.createdAt)}
