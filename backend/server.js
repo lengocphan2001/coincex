@@ -15,8 +15,6 @@ const axios = require('axios');
 const WebSocket = require('ws');
 const CopyExpertOrder = require('./models/CopyExpertOrder');
 const expressWs = require('express-ws');
-const copyAIRoutes = require('./routes/copyAIRoutes');
-const copyAIController = require('./controllers/copyAIController');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
