@@ -368,15 +368,11 @@ class CopyAITradingService {
       state.consecutiveLosses = 0;
       logger.info(`[CAPITAL] Reset capital index after WIN for user ${state.userId}`);
     } else if (orderStatus === 'LOSS') {
-      // Increment on loss, but cycle back to start if we hit the end
-      state.consecutiveLosses++;
-      state.capitalIndex = (state.capitalIndex + 1) % amounts.length;
-      
-      // If we've had too many consecutive losses, reset
-      if (state.consecutiveLosses >= amounts.length) {
-        state.capitalIndex = 0;
-        state.consecutiveLosses = 0;
-        logger.info(`[CAPITAL] Reset after max consecutive losses for user ${state.userId}`);
+      if (state.consecutiveLosses >= amounts.length - 1) {
+        
+      } else {
+          state.consecutiveLosses++;
+          state.capitalIndex = (state.capitalIndex + 1) % amounts.length;
       }
     }
     
