@@ -513,14 +513,6 @@ const CopyAi = () => {
           )}
         </div>
 
-        {!wsConnected && (
-          <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-            <p className="text-yellow-500 text-sm text-center">
-              Đang kết nối đến máy chủ giao dịch...
-            </p>
-          </div>
-        )}
-
         {error && (
           <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
             <p className="text-red-500 text-sm text-center">{error}</p>
