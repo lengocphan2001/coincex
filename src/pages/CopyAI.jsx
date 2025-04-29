@@ -75,8 +75,8 @@ const CopyAi = () => {
             setCapitalManagement(state.strategy.capital_management || '');
             setStopLoss(state.strategy.sl_tp || '');
           }
-        }
-      } catch (error) {
+          }
+        } catch (error) {
         console.error('Error fetching initial state:', error);
         if (error.response?.status === 401) {
           localStorage.removeItem('token');
@@ -125,7 +125,7 @@ const CopyAi = () => {
     try {
       const token = localStorage.getItem('token');
       const userId = localStorage.getItem('userId');
-      
+
       // Get pending orders
       const pendingResponse = await axios.get(`${API_URL2}/proxy/history-bo`, {
         params: {
@@ -145,7 +145,7 @@ const CopyAi = () => {
 
       // Get completed orders
       const historyResponse = await axios.get(`${API_URL2}/proxy/history-bo`, {
-        params: {
+              params: {
           status: 'completed',
           offset: 0,
           limit: 10
@@ -521,7 +521,7 @@ const CopyAi = () => {
               {startingTrade ? (
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
               ) : (
-                <FaPlay className="w-4 h-4" />
+              <FaPlay className="w-4 h-4" />
               )}
               <span>{startingTrade ? 'Starting...' : 'Bắt đầu chạy'}</span>
             </button>
@@ -534,7 +534,7 @@ const CopyAi = () => {
               {stoppingTrade ? (
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
               ) : (
-                <FaStop className="w-4 h-4" />
+              <FaStop className="w-4 h-4" />
               )}
               <span>{stoppingTrade ? 'Stopping...' : 'Dừng'}</span>
             </button>

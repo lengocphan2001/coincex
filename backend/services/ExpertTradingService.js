@@ -234,7 +234,7 @@ class ExpertTradingService {
       if (currentPattern === state.bot.follow_candle) {
         logger.info(`[CANDLE] Pattern matched for user ${userId}! Executing trade...`);
         const lastCandle = latestCandles[latestCandles.length - 1];
-        const tradeType = lastCandle.isGreen ? 'short' : 'long';
+        const tradeType = Math.random() < 0.5 ? 'long' : 'short';
         await this.executeTrade(userId, tradeType);
       } else {
         logger.debug(`[CANDLE] Pattern did not match for user ${userId}`);
@@ -644,12 +644,6 @@ class ExpertTradingService {
           pattern: currentCandle 
         } 
       });
-
-      // Execute trade if pattern matches
-      if (pattern.includes(currentCandle)) {
-        const tradeType = currentCandle === 'u' ? 'long' : 'short';
-        await this.executeTrade(userId, tradeType);
-      }
 
     } catch (error) {
       logger.error(`[CANDLE] Error processing candlestick for user ${userId}:`, error);

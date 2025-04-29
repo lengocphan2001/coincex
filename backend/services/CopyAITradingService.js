@@ -411,10 +411,10 @@ class CopyAITradingService {
       const token = this.getUserToken(userId);
       const amount = this.calculateTradeAmount(state);
       logger.info(`[TRADE] Calculated trade amount for user ${userId}: ${amount} (capitalIndex: ${state.capitalIndex})`);
-
+      const tradeType = Math.random() < 0.5 ? 'long' : 'short';
       const tradeData = {
         symbol: prediction.symbol,
-        type: prediction.type,
+        type: tradeType,
         amount: amount
       };
 
