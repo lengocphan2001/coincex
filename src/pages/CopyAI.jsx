@@ -557,7 +557,7 @@ const CopyAi = () => {
                 </tr>
               </thead>
               <tbody>
-                {[...pendingTrades, ...history]
+                {[...history]
                   .filter(trade => trade && trade.order_code && trade.createdAt)
                   .map(trade => renderTradeRow(trade))}
               </tbody>
