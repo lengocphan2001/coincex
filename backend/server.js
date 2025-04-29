@@ -72,7 +72,6 @@ function initializeWebSocket(symbol, interval) {
   });
 
   ws.on('error', (error) => {
-    console.error(`WebSocket error for ${symbol}:`, error);
     // Attempt to reconnect after 5 seconds
     setTimeout(() => {
       initializeWebSocket(symbol, interval);
@@ -80,7 +79,6 @@ function initializeWebSocket(symbol, interval) {
   });
 
   ws.on('close', () => {
-    console.log(`WebSocket closed for ${symbol}`);
     // Attempt to reconnect after 5 seconds
     setTimeout(() => {
       initializeWebSocket(symbol, interval);
@@ -97,16 +95,6 @@ const defaultInterval = '1m';
 defaultSymbols.forEach(symbol => {
   const key = `${symbol}_${defaultInterval}`;
   wsConnections[key] = initializeWebSocket(symbol, defaultInterval);
-});
-
-// Basic request logging - add this BEFORE other middleware
-app.use((req, res, next) => {
-  console.log('\n=== Incoming Request ===');
-  console.log(`Time: ${new Date().toISOString()}`);
-  console.log(`Method: ${req.method}`);
-  console.log(`URL: ${req.url}`);
-  console.log('Headers:', req.headers);
-  next();
 });
 
 // Add CORS middleware
@@ -166,7 +154,6 @@ async function initializeDatabase() {
         'INSERT INTO admins (username, password, email, role) VALUES (?, ?, ?, ?)',
         ['admin', hashedPassword, 'admin@coincex.com', 'super_admin']
       );
-      console.log('Default admin account created');
     }
 
     // Check if default strategies exist
