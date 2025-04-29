@@ -118,6 +118,14 @@ class CopyAITradingService {
         return { error: 1, message: 'Trading already in progress' };
       }
 
+      // Log strategy parameters for debugging
+      logger.info(`[START] Strategy parameters:`, {
+        name: strategy.name,
+        parameters: strategy.parameters,
+        capitalManagement: strategy.parameters.capitalManagement,
+        capital_management: strategy.parameters.capital_management
+      });
+
       // Validate strategy pattern
       const pattern = strategy.parameters.follow_candle;
       if (!pattern || typeof pattern !== 'string' || !pattern.match(/^[xd](-[xd])*$/)) {
@@ -360,19 +368,22 @@ class CopyAITradingService {
   }
 
   updateCapitalIndex(state, orderStatus) {
-    const amounts = this.getCapitalAmounts(state.strategy.parameters.capital_management);
+    const amounts = this.getCapitalAmounts(state.strategy.parameters.capitalManagement);
     
     if (orderStatus === 'WIN') {
-      // Reset on win
+      // Reset to first item on win
       state.capitalIndex = 0;
       state.consecutiveLosses = 0;
       logger.info(`[CAPITAL] Reset capital index after WIN for user ${state.userId}`);
     } else if (orderStatus === 'LOSS') {
-      if (state.consecutiveLosses >= amounts.length - 1) {
-        
+      // If we're at the last index, stay there until win
+      if (state.capitalIndex >= amounts.length - 1) {
+        logger.info(`[CAPITAL] Reached max capital index, staying at ${state.capitalIndex} until WIN for user ${state.userId}`);
       } else {
-          state.consecutiveLosses++;
-          state.capitalIndex = (state.capitalIndex + 1) % amounts.length;
+        // Increase index on loss
+        state.capitalIndex++;
+        state.consecutiveLosses++;
+        logger.info(`[CAPITAL] Increased capital index to ${state.capitalIndex} after LOSS for user ${state.userId}`);
       }
     }
     
@@ -440,7 +451,7 @@ class CopyAITradingService {
           const orderData = {
             user_id: userId.toString(),
             order_code: latestOrder.order_code,
-            type: prediction.type,
+            type: tradeType,
             amount: amount,
             received_usdt: 0,
             session: latestOrder.session,

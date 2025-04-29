@@ -296,17 +296,18 @@ const CopyAi = () => {
       const token = localStorage.getItem('token');
       const userId = localStorage.getItem('userId');
 
-      // Ensure strategy object has required structure
+      // Ensure strategy object has required structure and use consistent camelCase
       const tradingStrategy = {
         name: selectedStrategy.name,
         parameters: {
-          follow_candle: selectedStrategy.parameters?.follow_candle || selectedStrategy.follow_candle || '',
-          capital_management: selectedStrategy.parameters?.capital_management || selectedStrategy.capital_management || '',
-          sl_tp: selectedStrategy.parameters?.sl_tp || selectedStrategy.sl_tp || '',
+          followCandle: selectedStrategy.parameters?.follow_candle || selectedStrategy.follow_candle || '',
+          capitalManagement: selectedStrategy.parameters?.capital_management || selectedStrategy.capital_management || capitalManagement || '',
+          slTp: selectedStrategy.parameters?.sl_tp || selectedStrategy.sl_tp || stopLoss || '',
           ...selectedStrategy.parameters
         }
       };
 
+      console.log('Starting trading with strategy:', tradingStrategy); // Debug log
 
       const response = await axios.post(
         `${API_URL}/copy-ai/users/${userId}/start`,
