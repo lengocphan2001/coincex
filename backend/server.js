@@ -14,9 +14,15 @@ const bcrypt = require('bcryptjs');
 const axios = require('axios');
 const WebSocket = require('ws');
 const CopyExpertOrder = require('./models/CopyExpertOrder');
+const expressWs = require('express-ws');
+const copyAIRoutes = require('./routes/copyAIRoutes');
+const copyAIController = require('./controllers/copyAIController');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
+
+// Add WebSocket support to app
+expressWs(app);
 
 // Store last candles in memory
 let lastCandles = {};
@@ -242,9 +248,13 @@ app.post('/api/copy-expert-orders/user/:userId', expertController.createCopyExpe
 app.get('/api/copy-expert-orders/user/:userId', expertController.getUserCopyExpertOrders);
 app.patch('/api/copy-expert-orders/:order_code/user/:userId', expertController.updateOrderStatus);
 app.post('/api/copy-expert-orders/update-completed/user/:userId', expertController.updateCompletedOrders);
-
-// Admin: Get all copy expert orders
 app.get('/api/copy-expert-orders', authenticateToken, isSuperAdmin, expertController.getAllCopyExpertOrders);
+
+// New Expert Trading WebSocket routes
+app.get('/api/expert/users/:userId/state', expertController.getTradingState);
+app.post('/api/expert/users/:userId/start', expertController.startTrading);
+app.post('/api/expert/users/:userId/stop', expertController.stopTrading);
+app.ws('/api/expert/users/:userId/ws', expertController.handleWebSocketConnection);
 
 // Copy AI Order routes
 app.get('/api/copy-ai-orders/user/:userId', copyAiOrderController.getUserOrders);

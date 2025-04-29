@@ -1,5 +1,6 @@
 const CopyExpertOrder = require('../models/CopyExpertOrder');
 const logger = require('../utils/logger');
+const expertTradingService = require('../services/ExpertTradingService');
 
 class ExpertController {
   // Create new copy expert order
@@ -121,6 +122,75 @@ class ExpertController {
     } catch (error) {
       logger.error('Error fetching all copy expert orders:', error);
       res.status(500).json({ error: 1, message: 'Failed to fetch orders' });
+    }
+  }
+
+  // Get trading state
+  static async getTradingState(req, res) {
+    try {
+      const userId = req.params.userId;
+      const state = expertTradingService.getTradingState(userId);
+      res.json({ error: 0, data: state });
+    } catch (error) {
+      logger.error('Error getting trading state:', error);
+      res.status(500).json({ error: 1, message: 'Failed to get trading state' });
+    }
+  }
+
+  // Start trading
+  static async startTrading(req, res) {
+    try {
+      const userId = req.params.userId;
+      const { bot } = req.body;
+      const token = req.headers.authorization?.split(' ')[1]; // Get token from Authorization header
+
+      if (!bot || !bot.name || !bot.follow_candle || !bot.capital_management) {
+        return res.status(400).json({
+          error: 1,
+          message: 'Invalid bot configuration'
+        });
+      }
+
+      if (!token) {
+        return res.status(401).json({
+          error: 1,
+          message: 'Authentication token required'
+        });
+      }
+
+      const result = await expertTradingService.startTrading(userId, bot, token);
+      res.json(result);
+    } catch (error) {
+      logger.error('Error starting trading:', error);
+      res.status(500).json({ error: 1, message: 'Failed to start trading' });
+    }
+  }
+
+  // Stop trading
+  static async stopTrading(req, res) {
+    try {
+      const userId = req.params.userId;
+      const result = expertTradingService.stopTrading(userId);
+      res.json(result);
+    } catch (error) {
+      logger.error('Error stopping trading:', error);
+      res.status(500).json({ error: 1, message: 'Failed to stop trading' });
+    }
+  }
+
+  // Handle WebSocket connection
+  static handleWebSocketConnection(ws, req) {
+    try {
+      const userId = req.params.userId;
+      if (!userId) {
+        ws.close();
+        return;
+      }
+
+      expertTradingService.subscribe(userId, ws);
+    } catch (error) {
+      logger.error('Error handling WebSocket connection:', error);
+      ws.close();
     }
   }
 }

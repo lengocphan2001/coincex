@@ -181,121 +181,143 @@ class ExpertTradingService {
   async startTrading(bot) {
     if (!bot) return;
     
+    const token = localStorage.getItem('token');
+    const userId = localStorage.getItem('userId');
+    
+    if (!token || !userId) {
+      console.error('No token or userId available');
+      return;
+    }
+
     this.bot = bot;
     this.isTrading = true;
     this.saveState();
 
     try {
-      const requiredLength = this.bot.follow_candle.split('-').length;
-      if (requiredLength === 0) return;
+      // Start trading on backend
+      const response = await axios.post(
+        `${API_URL}/expert/start-trading`,
+        {
+          bot: bot,
+          userId: userId
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
 
-      // Close existing connection if any
-      if (this.wsConnection) {
-        this.wsConnection.close();
-        this.wsConnection = null;
-        // Add delay before creating new connection
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      if (response.data.error !== 0) {
+        throw new Error(response.data.message || 'Failed to start trading');
       }
 
-      // Add connection timeout and retry mechanism
-      let connectionAttempts = 0;
-      const maxAttempts = 5;
-      const connectWebSocket = () => {
-        if (!this.isTrading) return;
-        
-        if (connectionAttempts >= maxAttempts) {
-          console.error('Max reconnection attempts reached');
-          this.stopTrading();
-          return;
-        }
-
-        this.wsConnection = new WebSocket(`${BINANCE_WSS_URL}/ws/btcusdt@kline_1m`);
-        
-        this.wsConnection.onopen = () => {
-          console.log('WebSocket connected at:', new Date().toLocaleTimeString());
-          connectionAttempts = 0; // Reset attempts on successful connection
-          this.notifySubscribers({ type: 'WS_CONNECTED' });
-        };
-
-        this.wsConnection.onmessage = async (event) => {
-          if (!this.isTrading) return;
-
-          try {
-            const data = JSON.parse(event.data);
-            
-            if (data.e === 'kline' && data.k.x) {
-              const candle = data.k;
-              const candleTime = new Date(candle.t).getTime();
-
-              if (this.lastProcessedTime && candleTime <= this.lastProcessedTime) {
-                return;
-              }
-
-              console.log('Processing candle at:', new Date(candleTime).toLocaleTimeString());
-              this.lastProcessedTime = candleTime;
-
-              const response = await axios.get(`https://api.binance.com/api/v3/klines`, {
-                params: {
-                  symbol: 'BTCUSDT',
-                  interval: '1m',
-                  limit: requiredLength
-                }
-              });
-
-              if (!response.data || response.data.length < requiredLength) return;
-
-              const latestCandles = response.data.map(kline => ({
-                open: parseFloat(kline[1]),
-                close: parseFloat(kline[4]),
-                isGreen: parseFloat(kline[4]) > parseFloat(kline[1]),
-                closeTime: new Date(kline[6])
-              }));
-
-              const currentPattern = latestCandles
-                .map(candle => candle.isGreen ? 'x' : 'd')
-                .join('-');
-
-              console.log('Current pattern:', currentPattern, 'Target pattern:', this.bot.follow_candle);
-
-              if (currentPattern === this.bot.follow_candle) {
-                const lastCandle = latestCandles[latestCandles.length - 1];
-                const tradeType = lastCandle.isGreen ? 'short' : 'long';
-                await this.executeTrade(tradeType);
-              }
-
-              this.notifySubscribers({ type: 'CANDLE_PROCESSED', data: { time: candleTime, pattern: currentPattern } });
-            }
-          } catch (error) {
-            console.error('Error processing WebSocket message:', error);
-          }
-        };
-
-        this.wsConnection.onclose = (event) => {
-          console.log('WebSocket disconnected at:', new Date().toLocaleTimeString());
-          this.notifySubscribers({ type: 'WS_DISCONNECTED' });
-          
-          if (this.isTrading && !event.wasClean) {
-            connectionAttempts++;
-            console.log(`Attempting to reconnect... (Attempt ${connectionAttempts}/${maxAttempts})`);
-            // Exponential backoff for reconnection
-            setTimeout(() => {
-              if (this.isTrading) {
-                connectWebSocket();
-              }
-            }, Math.min(1000 * Math.pow(2, connectionAttempts), 30000));
-          }
-        };
-
-        this.wsConnection.onerror = (error) => {
-          console.error('WebSocket error:', error);
-        };
-      };
-
-      connectWebSocket();
+      // Connect to WebSocket for real-time updates
+      this.connectWebSocket();
 
     } catch (error) {
       console.error('Error starting trading:', error);
       this.notifySubscribers({ type: 'ERROR', error: 'Failed to start trading' });
+      this.stopTrading();
+    }
+  }
+
+  connectWebSocket() {
+    if (this.wsConnection) {
+      this.wsConnection.close();
+      this.wsConnection = null;
+    }
+
+    const token = localStorage.getItem('token');
+    const userId = localStorage.getItem('userId');
+
+    if (!token || !userId || !this.isTrading) {
+      console.error('Cannot connect WebSocket - missing token, userId, or trading not active');
+      return;
+    }
+
+    try {
+      this.wsConnection = new WebSocket(`${BINANCE_WSS_URL}/ws/btcusdt@kline_1m`);
+      
+      this.wsConnection.onopen = () => {
+        console.log('WebSocket connected at:', new Date().toLocaleTimeString());
+        this.notifySubscribers({ type: 'WS_CONNECTED' });
+      };
+
+      this.wsConnection.onmessage = async (event) => {
+        if (!this.isTrading) return;
+
+        try {
+          const data = JSON.parse(event.data);
+          if (data.e === 'kline' && data.k.x) {
+            await this.processCandle(data.k);
+          }
+        } catch (error) {
+          console.error('Error processing WebSocket message:', error);
+        }
+      };
+
+      this.wsConnection.onclose = () => {
+        console.log('WebSocket disconnected at:', new Date().toLocaleTimeString());
+        this.notifySubscribers({ type: 'WS_DISCONNECTED' });
+        
+        if (this.isTrading) {
+          setTimeout(() => this.connectWebSocket(), 5000);
+        }
+      };
+
+      this.wsConnection.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+    } catch (error) {
+      console.error('Error connecting to WebSocket:', error);
+    }
+  }
+
+  async processCandle(candle) {
+    if (!this.isTrading || !this.bot || this.isExecutingTrade) return;
+
+    const candleTime = new Date(candle.t).getTime();
+    if (this.lastProcessedTime && candleTime <= this.lastProcessedTime) return;
+
+    try {
+      console.log('Processing candle at:', new Date(candleTime).toLocaleTimeString());
+      this.lastProcessedTime = candleTime;
+
+      const requiredLength = this.bot.follow_candle.split('-').length;
+      const response = await axios.get('https://api.binance.com/api/v3/klines', {
+        params: {
+          symbol: 'BTCUSDT',
+          interval: '1m',
+          limit: requiredLength
+        }
+      });
+
+      if (!response.data || response.data.length < requiredLength) return;
+
+      const latestCandles = response.data.map(kline => ({
+        open: parseFloat(kline[1]),
+        close: parseFloat(kline[4]),
+        isGreen: parseFloat(kline[4]) > parseFloat(kline[1]),
+        closeTime: new Date(kline[6])
+      }));
+
+      const currentPattern = latestCandles
+        .map(candle => candle.isGreen ? 'x' : 'd')
+        .join('-');
+
+      console.log('Current pattern:', currentPattern, 'Target pattern:', this.bot.follow_candle);
+
+      if (currentPattern === this.bot.follow_candle) {
+        const lastCandle = latestCandles[latestCandles.length - 1];
+        const tradeType = lastCandle.isGreen ? 'short' : 'long';
+        await this.executeTrade(tradeType);
+      }
+
+      this.notifySubscribers({ type: 'CANDLE_PROCESSED', data: { time: candleTime, pattern: currentPattern } });
+    } catch (error) {
+      console.error('Error processing candle:', error);
     }
   }
 
@@ -306,6 +328,25 @@ class ExpertTradingService {
     if (this.wsConnection) {
       this.wsConnection.close();
       this.wsConnection = null;
+    }
+
+    const token = localStorage.getItem('token');
+    const userId = localStorage.getItem('userId');
+
+    if (token && userId) {
+      // Notify backend to stop trading
+      axios.post(
+        `${API_URL}/expert/stop-trading`,
+        { userId },
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      ).catch(error => {
+        console.error('Error stopping trading on backend:', error);
+      });
     }
 
     this.lastProcessedTime = null;
