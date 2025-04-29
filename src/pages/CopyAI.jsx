@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { FaPlay, FaStop, FaChevronDown } from 'react-icons/fa';
-import tradingService from '../services/TradingService';
+import { toast } from 'react-toastify';
 
-const API_URL = process.env.REACT_APP_API_URL;
-const API_URL2 = process.env.REACT_APP_API_URL2;
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001/api';
+const API_URL2 = process.env.REACT_APP_API_URL2 || 'http://localhost:5001/api';
 
 const CopyAi = () => {
   const [history, setHistory] = useState([]);
@@ -19,6 +19,78 @@ const CopyAi = () => {
   const [stopLoss, setStopLoss] = useState('');
   const [isTrading, setIsTrading] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
+  const [startingTrade, setStartingTrade] = useState(false);
+  const [stoppingTrade, setStoppingTrade] = useState(false);
+  const [ws, setWs] = useState(null);
+
+  // Handle WebSocket messages
+  const handleWebSocketMessage = (data) => {
+    switch (data.type) {
+      case 'STATE_UPDATE':
+        setIsTrading(data.data.isTrading);
+        if (data.data.strategy) {
+          setSelectedStrategy(data.data.strategy);
+          setCapitalManagement(data.data.strategy.capital_management || '');
+          setStopLoss(data.data.strategy.sl_tp || '');
+        }
+        break;
+      case 'NEW_TRADE':
+        setPendingTrades(prev => [data.data, ...prev]);
+        break;
+      case 'CANDLE_PROCESSED':
+        fetchTradeHistory();
+        break;
+      case 'ERROR':
+        toast.error(data.error);
+        break;
+      case 'TRADING_STOPPED':
+        setIsTrading(false);
+        toast.info('Trading has been stopped');
+        break;
+      default:
+        console.log('Unhandled message type:', data.type);
+    }
+  };
+
+  // Initialize component and WebSocket
+  useEffect(() => {
+    const userId = localStorage.getItem('userId');
+    const token = localStorage.getItem('token');
+    if (!userId || !token) return;
+
+    // Initial fetch of trade history
+    fetchTradeHistory();
+
+    // WebSocket connection
+    const wsUrl = `${API_URL.replace('http', 'ws')}/copy-ai/users/${userId}/ws`;
+    const wsConnection = new WebSocket(wsUrl);
+
+    wsConnection.onopen = () => {
+      setWsConnected(true);
+    };
+
+    wsConnection.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handleWebSocketMessage(data);
+    };
+
+    wsConnection.onclose = () => {
+      setWsConnected(false);
+      // Try to reconnect after 5 seconds
+      setTimeout(() => {
+        const newWs = new WebSocket(wsUrl);
+        newWs.onopen = wsConnection.onopen;
+        newWs.onmessage = wsConnection.onmessage;
+        newWs.onclose = wsConnection.onclose;
+      }, 5000);
+    };
+
+    return () => {
+      if (wsConnection) {
+        wsConnection.close();
+      }
+    };
+  }, []); // Run only once on mount
 
   // Fetch trade history
   const fetchTradeHistory = async () => {
@@ -26,7 +98,7 @@ const CopyAi = () => {
       const token = localStorage.getItem('token');
       const userId = localStorage.getItem('userId');
       
-      // First, get pending orders
+      // Get pending orders
       const pendingResponse = await axios.get(`${API_URL2}/proxy/history-bo`, {
         params: {
           status: 'pending',
@@ -43,7 +115,7 @@ const CopyAi = () => {
         setPendingTrades(pendingResponse.data.data);
       }
 
-      // Then get completed orders
+      // Get completed orders
       const historyResponse = await axios.get(`${API_URL2}/proxy/history-bo`, {
         params: {
           status: 'completed',
@@ -86,11 +158,12 @@ const CopyAi = () => {
         }
       }
     } catch (error) {
-      console.error('Error fetching trade history:', error);
+      console.error('Error fetching trade data:', error);
       if (error.response?.status === 401) {
         localStorage.removeItem('token');
         window.location.href = '/login';
       }
+      toast.error('Failed to fetch trading data. Please check your connection.');
     }
   };
 
@@ -106,83 +179,22 @@ const CopyAi = () => {
     }, 0);
   };
 
-  // Handle trading service events
-  useEffect(() => {
-    const unsubscribe = tradingService.subscribe((event) => {
-      switch (event.type) {
-        case 'WS_CONNECTED':
-          setWsConnected(true);
-          break;
-        case 'WS_DISCONNECTED':
-          setWsConnected(false);
-          break;
-        case 'NEW_TRADE':
-          setPendingTrades(prev => [event.data, ...prev]);
-          break;
-        case 'CANDLE_PROCESSED':
-          fetchTradeHistory();
-          break;
-        case 'ERROR':
-          setError(event.error);
-          break;
-        case 'TRADING_STOPPED':
-          setIsTrading(false);
-          break;
-        default:
-          break;
-      }
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // Initialize component
-  useEffect(() => {
-    const initializeComponent = async () => {
-      try {
-        // Get current trading status
-        const status = tradingService.getStatus();
-        setIsTrading(status.isTrading);
-        
-        if (status.strategy) {
-          setSelectedStrategy(status.strategy);
-          setCapitalManagement(status.strategy.capital_management || '');
-          setStopLoss(status.strategy.sl_tp || '');
-        } else {
-          // Only restore from localStorage if no active trading
-          const savedStrategy = localStorage.getItem('selectedStrategy');
-          if (savedStrategy) {
-            const strategy = JSON.parse(savedStrategy);
-            setSelectedStrategy(strategy);
-            setCapitalManagement(strategy.capital_management || '');
-            setStopLoss(strategy.sl_tp || '');
-          }
-        }
-
-        // Fetch initial trade history
-        await fetchTradeHistory();
-        
-        // Set up history fetching interval
-        const historyInterval = setInterval(fetchTradeHistory, 30000);
-
-        return () => clearInterval(historyInterval);
-      } catch (error) {
-        console.error('Error initializing component:', error);
-      }
-    };
-
-    initializeComponent();
-  }, []);
-
-  // Fetch strategies on mount
+  // Fetch strategies
   useEffect(() => {
     const fetchStrategies = async () => {
       try {
         setLoading(true);
         const userId = localStorage.getItem('userId');
+        const token = localStorage.getItem('token');
 
         // Fetch default strategies
-        const defaultResponse = await axios.get(`${API_URL}/strategies/user/admin`);
+        const defaultResponse = await axios.get(
+          `${API_URL}/strategies/user/admin`,
+          {
+            headers: { 'Authorization': `Bearer ${token}` }
+          }
+        );
+
         let allStrategies = [];
         
         if (defaultResponse.data.success) {
@@ -194,43 +206,26 @@ const CopyAi = () => {
         }
 
         // Fetch user strategies
-        const userResponse = await axios.get(`${API_URL}/strategies/user/${userId}`);
+        const userResponse = await axios.get(
+          `${API_URL}/strategies/user/${userId}`,
+          {
+            headers: { 'Authorization': `Bearer ${token}` }
+          }
+        );
+
         if (userResponse.data.success) {
           allStrategies = [...allStrategies, ...userResponse.data.data];
         }
 
         setStrategies(allStrategies);
 
-        // Get current trading status
-        const status = tradingService.getStatus();
-        
-        // If there's an active strategy in the trading service, use that
-        if (status.isTrading && status.strategy) {
-          const activeStrategy = allStrategies.find(s => s.id === status.strategy.id);
-          if (activeStrategy) {
-            handleStrategySelect(activeStrategy);
-            return;
-          }
-        }
-
-        // If no active strategy, try to restore from localStorage
-        const savedStrategyJson = localStorage.getItem('selectedStrategy');
-        if (savedStrategyJson) {
-          const savedStrategy = JSON.parse(savedStrategyJson);
-          const matchingStrategy = allStrategies.find(s => s.id === savedStrategy.id);
-          if (matchingStrategy) {
-            handleStrategySelect(matchingStrategy);
-            return;
-          }
-        }
-
-        // If no saved strategy found, select first available strategy
-        if (allStrategies.length > 0) {
+        if (!selectedStrategy && allStrategies.length > 0) {
           handleStrategySelect(allStrategies[0]);
         }
 
       } catch (error) {
-        setError('Failed to load strategies');
+        console.error('Error fetching strategies:', error);
+        toast.error('Failed to load strategies');
       } finally {
         setLoading(false);
       }
@@ -241,38 +236,109 @@ const CopyAi = () => {
 
   // Handle strategy selection
   const handleStrategySelect = (strategy) => {
-    if (!strategy) return;
-
-    // If currently trading with a different strategy, stop trading
-    const status = tradingService.getStatus();
-    if (status.isTrading && status.strategy?.id !== strategy.id) {
-      tradingService.stopTrading();
-    }
+    if (!strategy || isTrading) return;
     
-    setSelectedStrategy(strategy);
+    // Ensure strategy has all required properties
+    const formattedStrategy = {
+      name: strategy.name,
+      parameters: {
+        follow_candle: strategy.follow_candle || '',
+        capital_management: strategy.capital_management || '',
+        sl_tp: strategy.sl_tp || '',
+        ...strategy.parameters // Include any existing parameters
+      },
+      id: strategy.id,
+      isDefault: strategy.isDefault || false
+    };
+    
+    setSelectedStrategy(formattedStrategy);
     setCapitalManagement(strategy.capital_management || '');
     setStopLoss(strategy.sl_tp || '');
     setShowDropdown(false);
     
-    localStorage.setItem('selectedStrategy', JSON.stringify(strategy));
-
-    // If we were trading, restart with new strategy
-    if (status.isTrading) {
-      tradingService.startTrading(strategy);
-    }
+    localStorage.setItem('selectedStrategy', JSON.stringify(formattedStrategy));
   };
 
   // Start trading
   const startTrading = async () => {
     if (!selectedStrategy) return;
-    setIsTrading(true);
-    await tradingService.startTrading(selectedStrategy);
+    
+    try {
+      setStartingTrade(true);
+      const token = localStorage.getItem('token');
+      const userId = localStorage.getItem('userId');
+
+      // Ensure strategy object has required structure
+      const tradingStrategy = {
+        name: selectedStrategy.name,
+        parameters: {
+          follow_candle: selectedStrategy.parameters?.follow_candle || selectedStrategy.follow_candle || '',
+          capital_management: selectedStrategy.parameters?.capital_management || selectedStrategy.capital_management || '',
+          sl_tp: selectedStrategy.parameters?.sl_tp || selectedStrategy.sl_tp || '',
+          ...selectedStrategy.parameters
+        }
+      };
+
+      console.log('Starting trading with strategy:', tradingStrategy);
+
+      const response = await axios.post(
+        `${API_URL}/copy-ai/users/${userId}/start`,
+        { strategy: tradingStrategy },
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      if (response.data.error === 0) {
+        setIsTrading(true);
+        toast.success('Trading started successfully');
+        await fetchTradeHistory();
+      } else {
+        toast.error(response.data.message || 'Failed to start trading');
+        console.error('Trading start error:', response.data);
+      }
+    } catch (error) {
+      console.error('Error starting trading:', error.response?.data || error);
+      toast.error(error.response?.data?.message || 'Failed to start trading. Please try again.');
+    } finally {
+      setStartingTrade(false);
+    }
   };
 
   // Stop trading
-  const stopTrading = () => {
-    tradingService.stopTrading();
-    setIsTrading(false);
+  const stopTrading = async () => {
+    try {
+      setStoppingTrade(true);
+      const token = localStorage.getItem('token');
+      const userId = localStorage.getItem('userId');
+
+      const response = await axios.post(
+        `${API_URL}/copy-ai/users/${userId}/stop`,
+        {},
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      if (response.data.error === 0) {
+        setIsTrading(false);
+        toast.success('Trading stopped successfully');
+        await fetchTradeHistory(); // Fetch latest state
+      } else {
+        toast.error(response.data.message || 'Failed to stop trading');
+      }
+    } catch (error) {
+      console.error('Error stopping trading:', error);
+      toast.error('Failed to stop trading. Please try again.');
+    } finally {
+      setStoppingTrade(false);
+    }
   };
 
   // Format date for display
@@ -340,14 +406,17 @@ const CopyAi = () => {
               <label className="block text-white/70 text-sm mb-2">Chiến lược</label>
               <button
                 type="button"
-                onClick={() => setShowDropdown(!showDropdown)}
-                className="w-full bg-[#0B1221] rounded-lg p-4 text-white text-sm border-0 focus:ring-1 focus:ring-[#00D88A] outline-none flex items-center justify-between"
+                onClick={() => !isTrading && setShowDropdown(!showDropdown)}
+                disabled={isTrading}
+                className={`w-full bg-[#0B1221] rounded-lg p-4 text-white text-sm border-0 focus:ring-1 focus:ring-[#00D88A] outline-none flex items-center justify-between ${
+                  isTrading ? 'opacity-75 cursor-not-allowed' : ''
+                }`}
               >
                 <span>{selectedStrategy?.name || 'Chọn chiến lược'}</span>
                 <FaChevronDown className={`transform transition-transform ${showDropdown ? 'rotate-180' : ''}`} />
               </button>
               
-              {showDropdown && (
+              {showDropdown && !isTrading && (
                 <div className="absolute z-10 w-full mt-2 bg-[#0B1221] rounded-lg shadow-lg max-h-60 overflow-y-auto">
                   {strategies.map((strategy) => (
                     <button
@@ -359,8 +428,9 @@ const CopyAi = () => {
                     >
                       <div className="flex flex-col">
                         <span>{strategy.name}</span>
-                        <span className="text-sm text-white/70">Pattern: {strategy.follow_candle}</span>
-                        <span className="text-sm text-white/70">Capital: {strategy.capital_management}</span>
+                        <span className="text-sm text-white/70">Pattern: {strategy.follow_candle || strategy.parameters?.follow_candle || 'N/A'}</span>
+                        <span className="text-sm text-white/70">Capital: {strategy.capital_management || strategy.parameters?.capital_management || 'N/A'}</span>
+                        <span className="text-sm text-white/70">SL/TP: {strategy.sl_tp || strategy.parameters?.sl_tp || 'N/A'}</span>
                       </div>
                       {strategy.isDefault && (
                         <span className="text-xs text-[#00D88A] px-2 py-1 rounded-full border border-[#00D88A]">
@@ -414,24 +484,43 @@ const CopyAi = () => {
           {!isTrading ? (
             <button 
               onClick={startTrading}
-              disabled={!selectedStrategy}
+              disabled={!selectedStrategy || startingTrade}
               className={`${
-                selectedStrategy ? 'bg-[#00D88A] hover:bg-opacity-90' : 'bg-gray-500 cursor-not-allowed'
+                selectedStrategy && !startingTrade
+                  ? 'bg-[#00D88A] hover:bg-opacity-90'
+                  : 'bg-gray-500 cursor-not-allowed'
               } text-white px-8 py-3 rounded-lg flex items-center gap-2 transition-colors`}
             >
-              <FaPlay className="w-4 h-4" />
-              <span>Bắt đầu chạy</span>
+              {startingTrade ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              ) : (
+                <FaPlay className="w-4 h-4" />
+              )}
+              <span>{startingTrade ? 'Starting...' : 'Bắt đầu chạy'}</span>
             </button>
           ) : (
             <button 
               onClick={stopTrading}
-              className="bg-red-500 text-white px-8 py-3 rounded-lg flex items-center gap-2 hover:bg-opacity-90 transition-colors"
+              disabled={stoppingTrade}
+              className="bg-red-500 text-white px-8 py-3 rounded-lg flex items-center gap-2 hover:bg-opacity-90 transition-colors disabled:opacity-75 disabled:cursor-not-allowed"
             >
-              <FaStop className="w-4 h-4" />
-              <span>Dừng</span>
+              {stoppingTrade ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              ) : (
+                <FaStop className="w-4 h-4" />
+              )}
+              <span>{stoppingTrade ? 'Stopping...' : 'Dừng'}</span>
             </button>
           )}
         </div>
+
+        {!wsConnected && (
+          <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+            <p className="text-yellow-500 text-sm text-center">
+              Đang kết nối đến máy chủ giao dịch...
+            </p>
+          </div>
+        )}
 
         {error && (
           <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
@@ -468,7 +557,7 @@ const CopyAi = () => {
                 </tr>
               </thead>
               <tbody>
-                {[...history]
+                {[...pendingTrades, ...history]
                   .filter(trade => trade && trade.order_code && trade.createdAt)
                   .map(trade => renderTradeRow(trade))}
               </tbody>

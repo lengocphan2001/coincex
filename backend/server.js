@@ -15,6 +15,7 @@ const axios = require('axios');
 const WebSocket = require('ws');
 const CopyExpertOrder = require('./models/CopyExpertOrder');
 const expressWs = require('express-ws');
+const copyAIController = require('./controllers/copyAIController');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -259,6 +260,12 @@ app.get('/api/copy-ai-orders/user/:userId', copyAiOrderController.getUserOrders)
 app.post('/api/copy-ai-orders/user/:userId', copyAiOrderController.createOrder);
 app.patch('/api/copy-ai-orders/:order_code/user/:userId', copyAiOrderController.updateOrderStatus);
 app.post('/api/copy-ai-orders/update-completed/user/:userId', copyAiOrderController.updateCompletedOrders);
+
+// Copy AI endpoints
+app.get('/api/copy-ai/users/:userId/state', copyAIController.getTradingState);
+app.post('/api/copy-ai/users/:userId/start', copyAIController.startTrading);
+app.post('/api/copy-ai/users/:userId/stop', copyAIController.stopTrading);
+app.ws('/api/copy-ai/users/:userId/ws', copyAIController.handleWebSocketConnection);
 
 // Proxy routes for Binance API
 app.get('/api/proxy/candles', async (req, res) => {

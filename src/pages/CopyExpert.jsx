@@ -35,7 +35,6 @@ const CopyExpert = () => {
     const wsConnection = new WebSocket(wsUrl);
 
     wsConnection.onopen = () => {
-      console.log('WebSocket connected');
         setWsConnected(true);
     };
 
@@ -45,7 +44,6 @@ const CopyExpert = () => {
     };
 
     wsConnection.onclose = () => {
-      console.log('WebSocket disconnected');
         setWsConnected(false);
       // Try to reconnect after 5 seconds
       setTimeout(() => {
