@@ -58,7 +58,35 @@ const CopyAi = () => {
     const token = localStorage.getItem('token');
     if (!userId || !token) return;
 
-    // Initial fetch of trade history
+    // Fetch initial trading state
+    const fetchInitialState = async () => {
+      try {
+        const response = await axios.get(`${API_URL}/copy-ai/users/${userId}/state`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.data.error === 0) {
+          const state = response.data.data;
+          setIsTrading(state.isTrading);
+          if (state.strategy) {
+            setSelectedStrategy(state.strategy);
+            setCapitalManagement(state.strategy.capital_management || '');
+            setStopLoss(state.strategy.sl_tp || '');
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching initial state:', error);
+        if (error.response?.status === 401) {
+          localStorage.removeItem('token');
+          window.location.href = '/login';
+        }
+      }
+    };
+
+    // Initial fetch of trade history and state
+    fetchInitialState();
     fetchTradeHistory();
 
     // WebSocket connection
