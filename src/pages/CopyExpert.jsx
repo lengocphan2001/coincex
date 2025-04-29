@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { FaPlay, FaStop, FaChevronDown } from 'react-icons/fa';
-import useWebSocket from 'react-use-websocket';
-import { BINANCE_WSS_URL } from '../config/constants';
+import expertTradingService from '../services/ExpertTradingService';
 
 const API_URL = process.env.REACT_APP_API_URL;
 const API_URL2 = process.env.REACT_APP_API_URL2;
@@ -18,79 +17,173 @@ const CopyExpert = () => {
   const [currentProfit, setCurrentProfit] = useState(0);
   const [stopLoss, setStopLoss] = useState('30/60');
   const [isTrading, setIsTrading] = useState(false);
-  const capitalIndexRef = useRef(0);
-  const [tradingInterval, setTradingInterval] = useState(null);
-  const [lastCandleTime, setLastCandleTime] = useState(null);
-  const [nextCandleTime, setNextCandleTime] = useState(null);
   const [wsConnected, setWsConnected] = useState(false);
-  const [historyInterval, setHistoryInterval] = useState(null);
 
   const bots = [
-    { id: 1, name: 'Expert Bot 1', follow_candle: 'x', capital_management: '1-2-4-8', sl_tp: '30/60' },
+    { id: 1, name: 'Expert Bot 1', follow_candle: 'd', capital_management: '1-2-4-8', sl_tp: '30/60' },
   ];
 
-  // WebSocket connection for real-time candle updates
-  const { lastJsonMessage, readyState } = useWebSocket(
-    `${BINANCE_WSS_URL}/ws/btcusdt@kline_1m`,
-    {
-      shouldConnect: true,
-      onOpen: () => {
-        setWsConnected(true);
-      },
-      onClose: () => {
-        console.log('WebSocket disconnected at:', new Date().toLocaleTimeString());
-        setWsConnected(false);
-      },
-      onError: (error) => {
-        console.error('WebSocket error:', error);
-        setWsConnected(false);
-      },
-      onMessage: (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.e === 'kline') {
-            const candle = data.k;
-            const currentTime = new Date();
-            const candleCloseTime = new Date(candle.t);
-            const nextCandleTime = new Date(candle.t + 60000);
-            
-            setLastCandleTime(candleCloseTime);
-            setNextCandleTime(nextCandleTime);
-          }
-        } catch (error) {
-          console.error('Error processing WebSocket message:', error);
-        }
-      }
-    }
-  );
-
-  const getUserId = () => {
-    return localStorage.getItem('userId');
-  };
-
-  // Set up history fetching interval
+  // Handle trading service events
   useEffect(() => {
-    fetchTradeHistory();
-    const interval = setInterval(fetchTradeHistory, 60000);
-    setHistoryInterval(interval);
-
-    return () => {
-      if (historyInterval) {
-        clearInterval(historyInterval);
+    const unsubscribe = expertTradingService.subscribe((event) => {
+      switch (event.type) {
+        case 'WS_CONNECTED':
+          setWsConnected(true);
+          break;
+        case 'WS_DISCONNECTED':
+          setWsConnected(false);
+          break;
+        case 'NEW_TRADE':
+          setPendingTrades(prev => [event.data, ...prev]);
+          break;
+        case 'CANDLE_PROCESSED':
+          fetchTradeHistory();
+          break;
+        case 'ERROR':
+          setError(event.error);
+          break;
+        case 'TRADING_STOPPED':
+          setIsTrading(false);
+          break;
+        default:
+          break;
       }
-    };
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  const getCapitalAmounts = (capitalManagement) => {
-    if (!capitalManagement) return [1]; // default fallback
-    return capitalManagement.split('-').map(amount => parseFloat(amount));
+  // Initialize component
+  useEffect(() => {
+    const initializeComponent = async () => {
+      try {
+        // Get current trading status
+        const status = expertTradingService.getStatus();
+        setIsTrading(status.isTrading);
+        
+        if (status.bot) {
+          setSelectedBot(status.bot);
+          setCapitalManagement(status.bot.capital_management);
+          setStopLoss(status.bot.sl_tp);
+        }
+
+        // Fetch initial trade history
+        await fetchTradeHistory();
+        
+        // Set up history fetching interval
+        const historyInterval = setInterval(fetchTradeHistory, 30000);
+
+        return () => clearInterval(historyInterval);
+      } catch (error) {
+        console.error('Error initializing component:', error);
+      }
+    };
+
+    initializeComponent();
+  }, []);
+
+  const handleBotSelect = (bot) => {
+    if (!bot) return;
+
+    // If currently trading with a different bot, stop trading
+    const status = expertTradingService.getStatus();
+    if (status.isTrading && status.bot?.id !== bot.id) {
+      expertTradingService.stopTrading();
+    }
+    
+    setSelectedBot(bot);
+    setCapitalManagement(bot.capital_management);
+    setStopLoss(bot.sl_tp);
+    setShowDropdown(false);
+
+    // If we were trading, restart with new bot
+    if (status.isTrading) {
+      expertTradingService.startTrading(bot);
+    }
   };
 
-  const calculateTradeAmount = () => {
-    const amounts = getCapitalAmounts(selectedBot.capital_management);
-    const currentAmount = amounts[capitalIndexRef.current % amounts.length];
-    return currentAmount;
+  const startTrading = async () => {
+    if (!selectedBot) return;
+    setIsTrading(true);
+    await expertTradingService.startTrading(selectedBot);
+  };
+
+  const stopTrading = () => {
+    expertTradingService.stopTrading();
+    setIsTrading(false);
+  };
+
+  const fetchTradeHistory = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const userId = localStorage.getItem('userId');
+      
+      // First, get pending orders
+      const pendingResponse = await axios.get(`${API_URL2}/proxy/history-bo`, {
+        params: {
+          status: 'pending',
+          offset: 0,
+          limit: 10
+        },
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (pendingResponse.data?.data) {
+        setPendingTrades(pendingResponse.data.data);
+      }
+
+      // Then get completed orders
+      const historyResponse = await axios.get(`${API_URL2}/proxy/history-bo`, {
+        params: {
+          status: 'completed',
+          offset: 0,
+          limit: 10
+        },
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (historyResponse.data?.data) {
+        await axios.post(
+          `${API_URL}/copy-expert-orders/update-completed/user/${userId}`,
+          {
+            completedOrders: historyResponse.data.data
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+
+        const ordersResponse = await axios.get(
+          `${API_URL}/copy-expert-orders/user/${userId}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          }
+        );
+
+        if (ordersResponse.data.error === 0) {
+          setHistory(ordersResponse.data.data || []);
+          const totalProfit = calculateTotalProfit(ordersResponse.data.data || []);
+          setCurrentProfit(totalProfit.toFixed(2));
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching trade history:', error);
+      if (error.response?.status === 401) {
+        localStorage.removeItem('token');
+        window.location.href = '/login';
+      }
+    }
   };
 
   const calculateTotalProfit = (trades) => {
@@ -102,215 +195,6 @@ const CopyExpert = () => {
       }
       return total;
     }, 0);
-  };
-
-  const executeTrade = async (tradeType) => {
-    try {
-      const token = localStorage.getItem('token');
-      const userId = localStorage.getItem('userId');
-      const amount = calculateTradeAmount();
-      
-      const tradeData = {
-        symbol: 'BTCUSDT',
-        type: tradeType,
-        amount: amount,
-      };
-
-      // Add 4-second delay before executing trade
-      console.log('Preparing to execute trade, waiting 4 seconds...');
-      await new Promise(resolve => setTimeout(resolve, 4000));
-
-      const response = await axios.post(`${API_URL}/proxy/trading-bo`, 
-        tradeData,
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      if (response.data.error === 0) {
-        // Increment capital index after successful trade execution
-        const amounts = getCapitalAmounts(selectedBot.capital_management);
-        capitalIndexRef.current = (capitalIndexRef.current + 1) % amounts.length;
-
-        const historyResponse = await axios.get(`${API_URL2}/proxy/history-bo`, {
-          params: {
-            status: 'pending',
-            offset: 0,
-            limit: 1
-          },
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/json'
-          }
-        });
-
-        if (historyResponse.data.error === 0 && historyResponse.data.data && historyResponse.data.data.length > 0) {
-          const pendingOrder = historyResponse.data.data[0];
-          
-          const orderData = {
-            user_id: userId.toString(), 
-            order_code: pendingOrder.order_code,
-            type: tradeType,
-            amount: amount,
-            received_usdt: 0,
-            session: pendingOrder.session,
-            symbol: 'BTCUSDT',
-            status: 'PENDING',
-            bot: selectedBot.name,
-          };
-
-          const orderResponse = await axios.post(
-            `${API_URL}/copy-expert-orders/user/${userId}`,
-            orderData,
-            {
-              headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-
-          if (orderResponse.data.error === 0) {
-            console.log('✅ Trade executed and order created successfully');
-          }
-        } else {
-          setError('Failed to fetch order details');
-        }
-      }
-    } catch (error) {
-      setError(error.response?.data?.message || 'Failed to execute trade');
-    }
-  };
-
-  const startTrading = async () => {
-    if (!selectedBot) return;
-
-    try {
-      setIsTrading(true);
-      setError('');
-      console.log('Starting trading at:', new Date().toLocaleTimeString());
-
-      const requiredLength = selectedBot.follow_candle.split('-').length;
-
-      const response = await axios.get(`https://api.binance.com/api/v3/klines`, {
-        params: {
-          symbol: 'BTCUSDT',
-          interval: '1m',
-          limit: requiredLength
-        }
-      });
-
-      if (!response.data || response.data.length < requiredLength) {
-        throw new Error('Could not get enough initial candles');
-      }
-
-      const latestCandles = response.data.map(kline => ({
-        open: parseFloat(kline[1]),
-        close: parseFloat(kline[4]),
-        isGreen: parseFloat(kline[4]) > parseFloat(kline[1]),
-        closeTime: new Date(kline[6])
-      }));
-
-      // Store the last candle time to avoid duplicate checks
-      let lastProcessedCandleTime = latestCandles[latestCandles.length - 1].closeTime.getTime();
-
-      // Use WebSocket data for updates
-      const wsHandler = async (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.e === 'kline' && data.k.x) { // Only process completed candles
-            const candle = data.k;
-            const candleCloseTime = new Date(candle.T).getTime();
-
-            // Prevent duplicate processing
-            if (candleCloseTime <= lastProcessedCandleTime) {
-              return;
-            }
-            console.log('Candle close time:', new Date(candleCloseTime).toLocaleTimeString());
-
-            const response = await axios.get(`https://api.binance.com/api/v3/klines`, {
-              params: {
-                symbol: 'BTCUSDT',
-                interval: '1m',
-                limit: requiredLength
-              }
-            });
-
-            if (response.data && response.data.length >= requiredLength) {
-              const latestCandles = response.data.map(kline => ({
-                open: parseFloat(kline[1]),
-                close: parseFloat(kline[4]),
-                isGreen: parseFloat(kline[4]) > parseFloat(kline[1]),
-                closeTime: new Date(kline[6])
-              }));
-
-              lastProcessedCandleTime = candleCloseTime;
-
-              const currentPattern = latestCandles
-                .map(candle => candle.isGreen ? 'x' : 'd')
-                .join('-');
-
-              console.log('Current pattern:', currentPattern);
-              console.log('Bot pattern:', selectedBot.follow_candle);
-
-              if (currentPattern === selectedBot.follow_candle) {
-                const lastCandle = latestCandles[latestCandles.length - 1];
-                const tradeType = lastCandle.isGreen ? 'short' : 'long';
-                await executeTrade(tradeType);
-              }
-
-              // Update trade history after pattern check
-              await fetchTradeHistory();
-            }
-          }
-        } catch (error) {
-          console.error('Error processing WebSocket message:', error);
-        }
-      };
-
-      // Add WebSocket message handler
-      const ws = new WebSocket(`wss://stream.binance.com/ws/btcusdt@kline_1m`);
-      ws.onmessage = wsHandler;
-      ws.onopen = () => console.log('WebSocket connected for trading');
-      ws.onerror = (error) => console.error('WebSocket error:', error);
-      ws.onclose = () => {
-        console.log('WebSocket closed');
-        setIsTrading(false);
-      };
-
-      // Store WebSocket reference for cleanup
-      setTradingInterval(ws);
-    } catch (error) {
-      console.error('Error starting trading:', error);
-      setError('Failed to start trading');
-      setIsTrading(false);
-    }
-  };
-
-  const stopTrading = () => {
-    console.log('Stopping trading');
-    
-    if (tradingInterval) {
-      if (tradingInterval instanceof WebSocket) {
-        tradingInterval.close();
-      }
-      setTradingInterval(null);
-    }
-
-    setIsTrading(false);
-    capitalIndexRef.current = 0;
-  };
-
-  const handleBotSelect = (bot) => {
-    console.log('Bot selected:', bot);
-    setSelectedBot(bot);
-    setCapitalManagement(bot.capital_management);
-    setStopLoss(bot.sl_tp);
-    setShowDropdown(false);
   };
 
   const formatDateTime = (dateString) => {
@@ -365,138 +249,12 @@ const CopyExpert = () => {
     </tr>
   );
 
-  const fetchOrders = async () => {
-    try {
-      setLoading(true);
-      const token = localStorage.getItem('token');
-
-      const response = await axios.get(`${API_URL}/copy-expert-orders/user/${getUserId()}`, {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      });
-
-      if (response.data && response.data.error === 0) {
-        const trades = response.data.data || [];
-        setHistory(trades);
-        const totalProfit = calculateTotalProfit(trades);
-        setCurrentProfit(totalProfit.toFixed(2));
-        setError('');
-      }
-    } catch (error) {
-      console.error('Error fetching orders:', error.response?.data || error);
-      setError(error.response?.data?.message || 'Failed to fetch orders');
-      
-      if (error.response?.status === 401) {
-        localStorage.removeItem('token');
-        window.location.href = '/login';
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchTradeHistory = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const userId = localStorage.getItem('userId');
-      
-      
-      const historyResponse = await axios.get(`${API_URL2}/proxy/history-bo`, {
-        params: {
-          status: 'completed',
-          offset: 0,
-          limit: 10
-        },
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Accept': 'application/json'
-        }
-      });
-
-      if (!historyResponse.data) {
-        console.error('No data received from history-bo');
-        return;
-      }
-
-      const updateResponse = await axios.post(
-        `${API_URL}/copy-expert-orders/update-completed/user/${userId}`,
-        {
-          completedOrders: historyResponse.data.data || []
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-
-      if (updateResponse.data.error === 0) {
-        const ordersResponse = await axios.get(
-          `${API_URL}/copy-expert-orders/user/${userId}`,
-          {
-            headers: {
-              Authorization: `Bearer ${token}`
-            }
-          }
-        );
-
-
-        if (ordersResponse.data.error === 0) {
-          const trades = ordersResponse.data.data || [];
-          setHistory(trades);
-          
-          const totalProfit = calculateTotalProfit(trades);
-          setCurrentProfit(totalProfit.toFixed(2));
-          setError('');
-        } else {
-          console.error('Error fetching orders:', ordersResponse.data);
-          setError('Failed to fetch updated orders');
-        }
-      } else {
-        console.error('Error updating orders:', updateResponse.data);
-        setError('Failed to update order status');
-      }
-    } catch (error) {
-      if (error.response?.status === 401) {
-        localStorage.removeItem('token');
-        window.location.href = '/login';
-      } else {
-        setError(error.response?.data?.message || 'Failed to sync orders with trading history');
-      }
-    }
-  };
-
-  // Update component cleanup
-  useEffect(() => {
-    return () => {
-      if (tradingInterval) {
-        if (tradingInterval instanceof WebSocket) {
-          tradingInterval.close();
-        }
-        setTradingInterval(null);
-      }
-      if (historyInterval) {
-        clearInterval(historyInterval);
-        setHistoryInterval(null);
-      }
-    };
-  }, [tradingInterval, historyInterval]);
-
-  // Add useEffect to fetch orders when component mounts
-  useEffect(() => {
-    fetchOrders();
-  }, []);
-
   return (
     <div className="space-y-6">
       <div className="bg-[#0F1A2E] rounded-xl p-6">
         <h2 className="text-white text-lg font-medium mb-6">COPY THEO EXPERT</h2>
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Left Column */}
           <div className="space-y-4">
             <div className="relative">
               <label className="block text-white/70 text-sm mb-2">Expert</label>
@@ -540,7 +298,6 @@ const CopyExpert = () => {
             </div>
           </div>
 
-          {/* Right Column */}
           <div className="space-y-4">
             <div>
               <label className="block text-white/70 text-sm mb-2">Lợi nhuận hiện tại</label>
@@ -567,7 +324,7 @@ const CopyExpert = () => {
 
         <div className="mt-6 flex justify-center">
           {!isTrading ? (
-            <button
+            <button 
               onClick={startTrading}
               disabled={!selectedBot}
               className={`${
@@ -588,14 +345,13 @@ const CopyExpert = () => {
           )}
         </div>
 
-        {error && error !== 'Trading block busy, will try in next interval' && (
+        {error && (
           <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
             <p className="text-red-500 text-sm text-center">{error}</p>
           </div>
         )}
       </div>
 
-      {/* Transaction History */}
       <div className="bg-[#0F1A2E] rounded-xl p-6">
         <h2 className="text-white text-lg font-medium mb-6">Lịch sử giao dịch</h2>
         
@@ -624,17 +380,9 @@ const CopyExpert = () => {
                 </tr>
               </thead>
               <tbody>
-                {history.length > 0 || pendingTrades.length > 0 ? (
-                  [...pendingTrades, ...history]
-                    .filter(trade => trade && trade.order_code)
-                    .map(trade => renderTradeRow(trade))
-                ) : (
-                  <tr>
-                    <td colSpan="9" className="text-center py-8 text-white/70">
-                      Không có dữ liệu
-                    </td>
-                  </tr>
-                )}
+                {[...history]
+                  .filter(trade => trade && trade.order_code && trade.createdAt)
+                  .map(trade => renderTradeRow(trade))}
               </tbody>
             </table>
           </div>
