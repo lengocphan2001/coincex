@@ -142,12 +142,12 @@ const Login = () => {
                 <span className="font-bold">Tham gia cộng đồng tại đây ?</span>
                 <div className="flex items-center gap-2">
                   <img src={telegramIcon} alt="Telegram" className="w-[15px]" />
-                  <span>Telegram</span>
+                  <a href="https://t.me/bitluxuryy" target="_blank" rel="noopener noreferrer" className="text-[#229ED9] hover:underline">Telegram</a>
                 </div>
               </div>
               <div className="flex gap-2 items-start">
                 <span className="font-bold">Đăng ký tài khoản ?</span>
-                <a href="/register" className="text-[#00D88A] hover:underline font-medium">
+                <a href="https://t.me/mrsbit96" target="_blank" rel="noopener noreferrer" className="text-[#00D88A] hover:underline font-medium">
                   Tại đây
                 </a>
               </div>
