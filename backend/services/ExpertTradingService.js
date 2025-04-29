@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 const axios = require('axios');
 const logger = require('../utils/logger');
+const pool = require('../config/database');
 
 class ExpertTradingService {
   constructor() {
@@ -10,10 +11,14 @@ class ExpertTradingService {
     this.reconnectAttempts = new Map(); // userId -> number of reconnection attempts
     this.TRADING_PROXY_URL = process.env.TRADING_PROXY_URL || 'https://mon88.click/api';
     this.API_URL = process.env.API_URL || 'https://mon88.click/api';
-    this.MAX_RECONNECT_ATTEMPTS = 5;
+    this.MAX_RECONNECT_ATTEMPTS = 10; // Increased from 5 to 10
     this.INITIAL_RECONNECT_DELAY = 1000; // 1 second
     this.MAX_RECONNECT_DELAY = 30000; // 30 seconds
     this.userTokens = new Map(); // userId -> token
+    this.pendingOrdersCache = new Map(); // Cache for pending orders
+    this.lastOrderCheckTime = new Map(); // Track last order check time
+    this.ORDER_CHECK_INTERVAL = 5000; // Check orders every 5 seconds
+    this.wsReconnectTimers = new Map(); // Track reconnection timers
     logger.info('ExpertTradingService initialized');
   }
 
@@ -466,9 +471,18 @@ class ExpertTradingService {
   async connectWebSocket(userId) {
     logger.info(`[WS] Attempting to connect WebSocket for user ${userId}`);
     
+    // Clear any existing reconnect timer
+    if (this.wsReconnectTimers.has(userId)) {
+      clearTimeout(this.wsReconnectTimers.get(userId));
+      this.wsReconnectTimers.delete(userId);
+    }
+
     // Close existing connection if any
     if (this.wsConnections.has(userId)) {
-      this.wsConnections.get(userId).close();
+      const existingWs = this.wsConnections.get(userId);
+      if (existingWs.readyState === WebSocket.OPEN) {
+        existingWs.close();
+      }
       this.wsConnections.delete(userId);
     }
 
@@ -492,19 +506,40 @@ class ExpertTradingService {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
 
-      // Create new WebSocket connection
-      const ws = new WebSocket(process.env.BINANCE_WSS_URL || 'wss://stream.binance.com:9443/ws/btcusdt@kline_1m');
+      // Create new WebSocket connection with proper error handling
+      const wsUrl = process.env.BINANCE_WSS_URL || 'wss://stream.binance.com:9443/ws/btcusdt@kline_1m';
+      const ws = new WebSocket(wsUrl, {
+        handshakeTimeout: 10000, // 10 seconds timeout for initial connection
+        maxPayload: 1024 * 1024, // 1MB max payload
+      });
+
+      // Set a connection timeout
+      const connectionTimeout = setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          logger.error(`[WS] Connection timeout for user ${userId}`);
+          ws.terminate();
+        }
+      }, 10000);
 
       ws.on('open', () => {
         logger.info(`[WS] WebSocket connected for user ${userId}`);
+        clearTimeout(connectionTimeout);
         this.wsConnections.set(userId, ws);
         this.reconnectAttempts.set(userId, 0); // Reset attempts on successful connection
         this.notifySubscribers(userId, { type: 'WS_CONNECTED' });
+
+        // Send subscription message for kline data
+        const subscribeMsg = {
+          method: 'SUBSCRIBE',
+          params: ['btcusdt@kline_1m'],
+          id: 1
+        };
+        ws.send(JSON.stringify(subscribeMsg));
       });
 
       ws.on('message', (data) => {
         try {
-          const message = JSON.parse(data);
+          const message = JSON.parse(data.toString());
           if (message.k) { // Kline/Candlestick data
             this.handleCandlestickData(userId, message.k);
           }
@@ -513,8 +548,9 @@ class ExpertTradingService {
         }
       });
 
-      ws.on('close', () => {
-        logger.info(`[WS] WebSocket closed for user ${userId}`);
+      ws.on('close', (code, reason) => {
+        logger.info(`[WS] WebSocket closed for user ${userId}. Code: ${code}, Reason: ${reason}`);
+        clearTimeout(connectionTimeout);
         this.wsConnections.delete(userId);
         this.notifySubscribers(userId, { type: 'WS_DISCONNECTED' });
 
@@ -523,23 +559,63 @@ class ExpertTradingService {
         if (state.isTrading) {
           const attempts = (this.reconnectAttempts.get(userId) || 0) + 1;
           if (attempts <= this.MAX_RECONNECT_ATTEMPTS) {
-            logger.info(`[WS] Attempting to reconnect (${attempts}/${this.MAX_RECONNECT_ATTEMPTS}) for user ${userId}`);
+            logger.info(`[WS] Scheduling reconnect (${attempts}/${this.MAX_RECONNECT_ATTEMPTS}) for user ${userId}`);
             this.reconnectAttempts.set(userId, attempts);
-            this.connectWebSocket(userId);
+            
+            // Schedule reconnection with exponential backoff
+            const reconnectTimer = setTimeout(() => {
+              this.connectWebSocket(userId);
+            }, Math.min(1000 * Math.pow(2, attempts), this.MAX_RECONNECT_DELAY));
+            
+            this.wsReconnectTimers.set(userId, reconnectTimer);
           } else {
             logger.error(`[WS] Max reconnection attempts reached for user ${userId}`);
             this.stopTrading(userId);
+            this.notifySubscribers(userId, { 
+              type: 'ERROR', 
+              error: 'Maximum reconnection attempts reached. Trading has been stopped.' 
+            });
           }
         }
       });
 
       ws.on('error', (error) => {
         logger.error(`[WS] WebSocket error for user ${userId}:`, error);
-        this.notifySubscribers(userId, { type: 'ERROR', error: 'WebSocket connection error' });
+        clearTimeout(connectionTimeout);
+        this.notifySubscribers(userId, { 
+          type: 'ERROR', 
+          error: 'WebSocket connection error. Attempting to reconnect...' 
+        });
+        
+        // Force close and trigger reconnect
+        ws.terminate();
+      });
+
+      // Add ping/pong to keep connection alive
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.ping();
+        } else {
+          clearInterval(pingInterval);
+        }
+      }, 30000);
+
+      ws.on('pong', () => {
+        // Connection is alive
+        logger.debug(`[WS] Received pong from server for user ${userId}`);
+      });
+
+      // Clean up interval on close
+      ws.on('close', () => {
+        clearInterval(pingInterval);
       });
 
     } catch (error) {
       logger.error(`[WS] Error connecting WebSocket for user ${userId}:`, error);
+      this.notifySubscribers(userId, { 
+        type: 'ERROR', 
+        error: 'Failed to establish WebSocket connection. Will retry...' 
+      });
       throw error;
     }
   }
