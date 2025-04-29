@@ -45,7 +45,9 @@ class CopyAITradingService {
         strategy: null,
         capitalIndex: 0,
         lastProcessedTime: null,
-        isExecutingTrade: false
+        isExecutingTrade: false,
+        lastOrderStatus: null,
+        consecutiveLosses: 0
       });
     }
     return this.tradingStates.get(userId);
@@ -191,15 +193,17 @@ class CopyAITradingService {
     }
 
     const candleTime = new Date(candle.t).getTime();
-    if (state.lastProcessedTime && candleTime <= state.lastProcessedTime) {
-      logger.debug(`[CANDLE] Skipping already processed candle for user ${userId}`);
+    
+    // Only skip if it's exactly the same timestamp, allow updates to the current candle
+    if (state.lastProcessedTime && candleTime < state.lastProcessedTime) {
+      logger.debug(`[CANDLE] Skipping older candle for user ${userId}`);
       return;
     }
 
     try {
-      logger.info(`[CANDLE] Processing new candle for user ${userId} at ${new Date(candleTime).toISOString()}`);
-      state.lastProcessedTime = candleTime;
-
+      logger.info(`[CANDLE] Processing candle for user ${userId} at ${new Date(candleTime).toISOString()}`);
+      
+      // Update the last processed time only after successful processing
       const response = await axios.get('https://api.binance.com/api/v3/klines', {
         params: {
           symbol: 'BTCUSDT',
@@ -226,6 +230,10 @@ class CopyAITradingService {
         await this.executeTrade(userId, prediction);
       }
 
+      // Only update lastProcessedTime after successful processing
+      state.lastProcessedTime = candleTime;
+      this.saveState(userId);
+
       this.notifySubscribers(userId, {
         type: 'CANDLE_PROCESSED',
         data: { time: candleTime }
@@ -239,16 +247,6 @@ class CopyAITradingService {
   async fetchOrders(userId, type = 'all') {
     const token = this.getUserToken(userId);
     const now = Date.now();
-    const lastCheck = this.lastOrderCheckTime.get(userId) || 0;
-
-    // Only check if enough time has passed
-    if (now - lastCheck < this.ORDER_CHECK_INTERVAL) {
-      logger.debug(`[ORDERS] Using cached orders for user ${userId}`);
-      return {
-        pending: this.pendingOrdersCache.get(userId) || [],
-        completed: []
-      };
-    }
 
     try {
       logger.info(`[ORDERS] Fetching ${type} orders for user ${userId}`);
@@ -334,6 +332,58 @@ class CopyAITradingService {
     }
   }
 
+  async checkLastCompletedOrder(userId) {
+    try {
+      const token = this.getUserToken(userId);
+      const response = await axios.get(`${this.TRADING_PROXY_URL}/proxy/history-bo`, {
+        params: {
+          status: 'completed',
+          offset: 0,
+          limit: 1
+        },
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (response.data?.data?.length > 0) {
+        const lastOrder = response.data.data[0];
+        return lastOrder;
+      }
+      return null;
+    } catch (error) {
+      logger.error(`Error checking last completed order for user ${userId}:`, error);
+      return null;
+    }
+  }
+
+  updateCapitalIndex(state, orderStatus) {
+    const amounts = this.getCapitalAmounts(state.strategy.parameters.capital_management);
+    
+    if (orderStatus === 'WIN') {
+      // Reset on win
+      state.capitalIndex = 0;
+      state.consecutiveLosses = 0;
+      logger.info(`[CAPITAL] Reset capital index after WIN for user ${state.userId}`);
+    } else if (orderStatus === 'LOSS') {
+      // Increment on loss, but cycle back to start if we hit the end
+      state.consecutiveLosses++;
+      state.capitalIndex = (state.capitalIndex + 1) % amounts.length;
+      
+      // If we've had too many consecutive losses, reset
+      if (state.consecutiveLosses >= amounts.length) {
+        state.capitalIndex = 0;
+        state.consecutiveLosses = 0;
+        logger.info(`[CAPITAL] Reset after max consecutive losses for user ${state.userId}`);
+      }
+    }
+    
+    state.lastOrderStatus = orderStatus;
+    this.saveState(state.userId);
+    logger.info(`[CAPITAL] Updated for user ${state.userId}: index=${state.capitalIndex}, status=${orderStatus}, consecutive losses=${state.consecutiveLosses}`);
+  }
+
   // Optimize trade execution
   async executeTrade(userId, prediction) {
     logger.info(`[TRADE] Starting trade execution for user ${userId}, type: ${prediction.type}`);
@@ -346,8 +396,16 @@ class CopyAITradingService {
 
     try {
       state.isExecutingTrade = true;
-      const hasPending = await this.hasPendingOrders(userId);
+
+      await new Promise(resolve => setTimeout(resolve, 3000)); // Required delay
+
+      // Check last completed order and update capital index if needed
+      const lastOrder = await this.checkLastCompletedOrder(userId);
+      if (lastOrder && lastOrder.status !== state.lastOrderStatus) {
+        this.updateCapitalIndex(state, lastOrder.status);
+      }
       
+      const hasPending = await this.hasPendingOrders(userId);
       if (hasPending) {
         logger.info(`[TRADE] Skipping trade - pending order exists for user ${userId}`);
         return;
@@ -355,6 +413,8 @@ class CopyAITradingService {
 
       const token = this.getUserToken(userId);
       const amount = this.calculateTradeAmount(state);
+      logger.info(`[TRADE] Calculated trade amount for user ${userId}: ${amount} (capitalIndex: ${state.capitalIndex})`);
+
       const tradeData = {
         symbol: prediction.symbol,
         type: prediction.type,
@@ -362,8 +422,7 @@ class CopyAITradingService {
       };
 
       logger.info(`[TRADE] Executing trade for user ${userId}:`, tradeData);
-      await new Promise(resolve => setTimeout(resolve, 4000)); // Required delay
-
+      
       const tradeResponse = await axios.post(
         `${this.TRADING_PROXY_URL}/proxy/trading-bo`,
         tradeData,
@@ -377,9 +436,6 @@ class CopyAITradingService {
 
       if (tradeResponse.data.error === 0) {
         logger.info(`[TRADE] Trade executed successfully for user ${userId}`);
-        
-        // Wait briefly then fetch latest orders
-        await new Promise(resolve => setTimeout(resolve, 1000));
         const { pending } = await this.fetchOrders(userId, 'pending');
         const latestOrder = pending[0];
 
@@ -393,7 +449,8 @@ class CopyAITradingService {
             session: latestOrder.session,
             symbol: prediction.symbol,
             status: 'PENDING',
-            strategy: state.strategy.name
+            strategy: state.strategy.name,
+            bot: state.strategy.name
           };
 
           await axios.post(
@@ -407,10 +464,8 @@ class CopyAITradingService {
             }
           );
 
-          state.capitalIndex = (state.capitalIndex + 1) % this.getCapitalAmounts(state.strategy.parameters.capitalManagement).length;
-          logger.info(`[TRADE] Order created and capital index updated for user ${userId}: ${state.capitalIndex}`);
-          
           this.notifySubscribers(userId, { type: 'NEW_TRADE', data: orderData });
+          logger.info(`[TRADE] Order created for user ${userId}`);
         }
       } else {
         logger.error(`[TRADE] Trade execution failed for user ${userId}:`, tradeResponse.data);

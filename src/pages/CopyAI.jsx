@@ -48,7 +48,7 @@ const CopyAi = () => {
         toast.info('Trading has been stopped');
         break;
       default:
-        console.log('Unhandled message type:', data.type);
+        break;
     }
   };
 
@@ -279,7 +279,6 @@ const CopyAi = () => {
         }
       };
 
-      console.log('Starting trading with strategy:', tradingStrategy);
 
       const response = await axios.post(
         `${API_URL}/copy-ai/users/${userId}/start`,

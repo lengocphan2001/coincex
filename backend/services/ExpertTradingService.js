@@ -41,7 +41,9 @@ class ExpertTradingService {
         bot: null,
         capitalIndex: 0,
         lastProcessedTime: null,
-        isExecutingTrade: false
+        isExecutingTrade: false,
+        lastOrderStatus: null,
+        consecutiveLosses: 0
       });
     }
     return this.tradingStates.get(userId);
@@ -277,6 +279,56 @@ class ExpertTradingService {
     return capitalManagement.split('-').map(amount => parseFloat(amount));
   }
 
+  async checkLastCompletedOrder(userId) {
+    try {
+      const token = this.getUserToken(userId);
+      const response = await axios.get(`${this.TRADING_PROXY_URL}/proxy/history-bo`, {
+        params: {
+          status: 'completed',
+          offset: 0,
+          limit: 1
+        },
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (response.data?.data?.length > 0) {
+        const lastOrder = response.data.data[0];
+        return lastOrder;
+      }
+      return null;
+    } catch (error) {
+      logger.error(`Error checking last completed order for user ${userId}:`, error);
+      return null;
+    }
+  }
+
+  updateCapitalIndex(state, orderStatus) {
+    const amounts = this.getCapitalAmounts(state.bot.capital_management);
+    
+    if (orderStatus === 'WIN') {
+      // Reset on win
+      state.capitalIndex = 0;
+      state.consecutiveLosses = 0;
+    } else if (orderStatus === 'LOSS') {
+      // Increment on loss, but cycle back to start if we hit the end
+      state.consecutiveLosses++;
+      state.capitalIndex = (state.capitalIndex + 1) % amounts.length;
+      
+      // If we've had too many consecutive losses, reset
+      if (state.consecutiveLosses >= amounts.length) {
+        state.capitalIndex = 0;
+        state.consecutiveLosses = 0;
+      }
+    }
+    
+    state.lastOrderStatus = orderStatus;
+    this.saveState(state.userId);
+    logger.info(`Capital index updated for user ${state.userId}: index=${state.capitalIndex}, status=${orderStatus}, consecutive losses=${state.consecutiveLosses}`);
+  }
+
   // Execute a trade
   async executeTrade(userId, tradeType) {
     logger.info(`[TRADE] Starting trade execution for user ${userId}, type: ${tradeType}`);
@@ -293,9 +345,18 @@ class ExpertTradingService {
     }
 
     try {
-      state.isExecutingTrade = true;
-      logger.info(`[TRADE] Checking pending orders for user ${userId}`);
 
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      state.isExecutingTrade = true;
+      
+      // Check last completed order and update capital index if needed
+      const lastOrder = await this.checkLastCompletedOrder(userId);
+      if (lastOrder && lastOrder.status !== state.lastOrderStatus) {
+        this.updateCapitalIndex(state, lastOrder.status);
+      }
+
+      logger.info(`[TRADE] Checking pending orders for user ${userId}`);
       const hasPending = await this.hasPendingOrders(userId);
       if (hasPending) {
         logger.info(`[TRADE] Skipping trade - pending order exists for user ${userId}`);
@@ -304,7 +365,7 @@ class ExpertTradingService {
 
       const token = this.getUserToken(userId);
       const amount = this.calculateTradeAmount(state);
-      logger.info(`[TRADE] Calculated trade amount for user ${userId}: ${amount}`);
+      logger.info(`[TRADE] Calculated trade amount for user ${userId}: ${amount} (capitalIndex: ${state.capitalIndex})`);
 
       const tradeData = {
         symbol: 'BTCUSDT',
@@ -313,7 +374,7 @@ class ExpertTradingService {
       };
 
       logger.info(`[TRADE] Preparing to execute trade for user ${userId}:`, tradeData);
-      await new Promise(resolve => setTimeout(resolve, 4000));
+      
 
       logger.info(`[TRADE] Sending trade request for user ${userId}`);
       const response = await axios.post(
@@ -326,6 +387,8 @@ class ExpertTradingService {
           }
         }
       );
+
+      
 
       logger.info(`[TRADE] Trade response for user ${userId}:`, response.data);
 
@@ -343,6 +406,8 @@ class ExpertTradingService {
             'Accept': 'application/json'
           }
         });
+
+        
 
         logger.info(`[TRADE] History response for user ${userId}:`, historyResponse.data);
 
@@ -374,7 +439,7 @@ class ExpertTradingService {
             }
           );
 
-          state.capitalIndex = (state.capitalIndex + 1) % this.getCapitalAmounts(state.bot.capital_management).length;
+          
           logger.info(`[TRADE] Updated capital index for user ${userId} to ${state.capitalIndex}`);
           
           this.notifySubscribers(userId, { type: 'NEW_TRADE', data: orderData });
