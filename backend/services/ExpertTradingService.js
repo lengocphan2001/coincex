@@ -8,8 +8,8 @@ class ExpertTradingService {
     this.wsConnections = new Map(); // userId -> WebSocket connection
     this.subscribers = new Map(); // userId -> Set of WebSocket clients
     this.reconnectAttempts = new Map(); // userId -> number of reconnection attempts
-    this.TRADING_PROXY_URL = process.env.TRADING_PROXY_URL || 'http://localhost:3001/api';
-    this.API_URL = process.env.API_URL || 'http://localhost:5001/api';
+    this.TRADING_PROXY_URL = process.env.TRADING_PROXY_URL || 'https://mon88.click/api';
+    this.API_URL = process.env.API_URL || 'https://mon88.click/api';
     this.MAX_RECONNECT_ATTEMPTS = 5;
     this.INITIAL_RECONNECT_DELAY = 1000; // 1 second
     this.MAX_RECONNECT_DELAY = 30000; // 30 seconds
