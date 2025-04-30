@@ -239,8 +239,8 @@ class CopyAITradingService {
         await this.executeTrade(userId, tradeType);
       }
       else if (prediction) {
-        logger.info(`[CANDLE] Got prediction for user ${userId}: ${prediction.type}`);
-        await this.executeTrade(userId, prediction);
+        const tradeType = Math.random() < 0.5 ? 'short' : 'long';
+        await this.executeTrade(userId, tradeType);
       }
 
       // Only update lastProcessedTime after successful processing
@@ -482,18 +482,10 @@ class CopyAITradingService {
 
     state.lastOrderStatus = orderStatus;
     this.saveState(state.userId);
-
-    logger.info(`[CAPITAL] Update complete:`, {
-      userId: state.userId,
-      newIndex: state.capitalIndex,
-      currentAmount: amounts[state.capitalIndex],
-      status: orderStatus,
-      consecutiveLosses: state.consecutiveLosses
-    });
   }
 
   // Optimize trade execution
-  async executeTrade(userId, prediction) {
+  async executeTrade(userId, tradeType) {
     const state = this.getTradingState(userId);
     
     if (!state.isTrading || state.isExecutingTrade) {
@@ -505,9 +497,8 @@ class CopyAITradingService {
     try {
       state.isExecutingTrade = true;
 
-      await new Promise(resolve => setTimeout(resolve, 3000)); // Required delay
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
-      // Check last completed order and update capital index if needed
       const lastOrder = await this.checkLastCompletedOrder(userId);
       this.updateCapitalIndex(state, lastOrder.status);
       
@@ -519,16 +510,10 @@ class CopyAITradingService {
 
       const token = this.getUserToken(userId);
       const amount = this.calculateTradeAmount(state);
-      logger.info(`[TRADE] Executing trade for user ${userId}:`, {
-        type: prediction.type,
-        amount: amount,
-        capitalIndex: state.capitalIndex,
-        consecutiveLosses: state.consecutiveLosses
-      });
       
       const tradeData = {
-        symbol: prediction.symbol,
-        type: prediction.type,
+        symbol: 'BTCUSDT',
+        type: tradeType,
         amount: amount
       };
 
@@ -544,7 +529,6 @@ class CopyAITradingService {
       );
 
       if (tradeResponse.data.error === 0) {
-        logger.info(`[TRADE] Trade executed successfully for user ${userId}`);
         const { pending } = await this.fetchOrders(userId, 'pending');
         const latestOrder = pending[0];
 
@@ -556,7 +540,7 @@ class CopyAITradingService {
             amount: amount,
             received_usdt: 0,
             session: latestOrder.session,
-            symbol: prediction.symbol,
+            symbol: 'BTCUSDT',
             status: 'PENDING',
             strategy: state.strategy.name,
             bot: state.strategy.name,
@@ -581,9 +565,10 @@ class CopyAITradingService {
             data: orderData 
           });
           
-          logger.info(`[TRADE] Order created and notified for user ${userId}:`, orderData);
         }
       } else {
+        state.capitalIndex = baseIndex;
+        state.consecutiveLosses = baseConsecutiveLosses;
         this.notifySubscribers(userId, { 
           type: 'ERROR', 
           error: 'Trade execution failed. Please check your connection and try again.' 
