@@ -23,6 +23,7 @@ const CopyExpert = () => {
 
   const bots = [
     { id: 1, name: 'Expert Bot 1', follow_candle: 'd', capital_management: '1-2-4-8', sl_tp: '30/60' },
+    { id: 2, name: 'Trung', follow_candle: 'all', capital_management: '1-2-4-8', sl_tp: '30/60' },
   ];
 
   // Connect to WebSocket

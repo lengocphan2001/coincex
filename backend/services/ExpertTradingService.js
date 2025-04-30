@@ -96,9 +96,8 @@ class ExpertTradingService {
 
   // Start trading for a user
   async startTrading(userId, bot, token) {
-
     // Validate inputs
-    if (!bot || !bot.name || !bot.follow_candle || !bot.capital_management) {
+    if (!bot || !bot.name || !bot.capital_management) {
       logger.error(`[START] Invalid bot configuration for user ${userId}:`, bot);
       return { error: 1, message: 'Invalid bot configuration' };
     }
@@ -119,14 +118,6 @@ class ExpertTradingService {
         return { error: 1, message: 'Trading already in progress' };
       }
 
-      // Validate bot pattern
-      const requiredLength = bot.follow_candle.split('-').length;
-      if (requiredLength === 0) {
-        logger.error(`[START] Invalid candle pattern for user ${userId}: ${bot.follow_candle}`);
-        return { error: 1, message: 'Invalid candle pattern' };
-      }
-
-      // Update trading state
       state.bot = bot;
       state.isTrading = true;
       state.lastProcessedTime = null;
@@ -211,7 +202,7 @@ class ExpertTradingService {
         params: {
           symbol: 'BTCUSDT',
           interval: '1m',
-          limit: requiredLength
+          limit: Math.max(1, requiredLength)
         }
       });
 
@@ -230,9 +221,7 @@ class ExpertTradingService {
         .map(candle => candle.isGreen ? 'x' : 'd')
         .join('-');
 
-      logger.info(`[CANDLE] Current pattern: ${currentPattern}, Target pattern: ${state.bot.follow_candle}`);
-
-      if (currentPattern === state.bot.follow_candle || state.bot.follow_candle === '') {
+      if (currentPattern === state.bot.follow_candle || state.bot.follow_candle === 'all') {
         logger.info(`[CANDLE] Pattern matched for user ${userId}! Executing trade...`);
         const tradeType = Math.random() < 0.5 ? 'short' : 'long';
         logger.info(`[TRADE] Randomly selected trade type: ${tradeType} for user ${userId}`);
