@@ -20,10 +20,11 @@ const CopyExpert = () => {
   const [wsConnected, setWsConnected] = useState(false);
   const [ws, setWs] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isUpdatingCapital, setIsUpdatingCapital] = useState(false);
 
   const bots = [
     { id: 1, name: 'Expert Bot 1', follow_candle: 'd', capital_management: '1-2-4-8', sl_tp: '30/60' },
-    { id: 2, name: 'Trung', follow_candle: 'all', capital_management: '1-2-4-8', sl_tp: '30/60' },
+    { id: 2, name: 'Mr Bít', follow_candle: 'all', capital_management: '1-2-4-8', sl_tp: '30/60' },
   ];
 
   // Connect to WebSocket
@@ -397,6 +398,86 @@ const CopyExpert = () => {
     </tr>
   );
 
+  // Add debounce function
+  const debounce = (func, wait) => {
+    let timeout;
+    return (...args) => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func(...args), wait);
+    };
+  };
+
+  const handleUpdateCapitalManagement = async (newValue) => {
+    try {
+      setIsUpdatingCapital(true);
+
+      // Validate format (numbers separated by dashes)
+      if (!newValue.match(/^\d+(\.\d+)?(-\d+(\.\d+)?)*$/)) {
+        toast.error('Invalid format. Please use numbers separated by dashes (e.g., 2-4-8)');
+        return;
+      }
+
+      const amounts = newValue.split('-').map(Number);
+      if (amounts.some(amount => amount <= 0)) {
+        toast.error('All amounts must be greater than 0');
+        return;
+      }
+
+      const userId = localStorage.getItem('userId');
+      const token = localStorage.getItem('token');
+
+      if (!userId || !token) {
+        toast.error('Please login to continue');
+        return;
+      }
+
+      // First stop trading if it's running
+      if (isTrading) {
+        await axios.post(
+          `${API_URL}/expert/users/${userId}/stop`,
+          {},
+          { headers: { 'Authorization': `Bearer ${token}` } }
+        );
+      }
+
+      // Update local state first
+      setCapitalManagement(newValue);
+      if (selectedBot) {
+        const updatedBot = {
+          ...selectedBot,
+          capital_management: newValue
+        };
+        setSelectedBot(updatedBot);
+
+        // Restart trading with updated bot if it was running
+        if (isTrading) {
+          await axios.post(
+            `${API_URL}/expert/users/${userId}/start`,
+            { bot: updatedBot },
+            { headers: { 'Authorization': `Bearer ${token}` } }
+          );
+          toast.success('Capital management updated and trading restarted');
+        } else {
+          toast.success('Capital management updated');
+        }
+      }
+    } catch (error) {
+      console.error('Error updating capital management:', error);
+      toast.error(error.response?.data?.message || error.message || 'Failed to update capital management');
+      if (error.response?.status === 401) {
+        localStorage.removeItem('token');
+        window.location.href = '/login';
+      }
+      // Revert to previous value on error
+      setCapitalManagement(selectedBot?.capital_management || '1-2-4-8');
+    } finally {
+      setIsUpdatingCapital(false);
+    }
+  };
+
+  // Debounced version of the update function
+  const debouncedUpdateCapital = debounce(handleUpdateCapitalManagement, 500);
+
   return (
     <div className="space-y-6">
       <div className="bg-[#0F1A2E] rounded-xl p-6">
@@ -442,14 +523,36 @@ const CopyExpert = () => {
             
             <div>
               <label className="block text-white/70 text-sm mb-2">Quản lý vốn</label>
-              <input
-                type="text"
-                disabled={true}
-                value={capitalManagement}
-                onChange={(e) => setCapitalManagement(e.target.value)}
-                className="w-full bg-[#0B1221] rounded-lg p-4 text-white text-sm border-0 focus:ring-1 focus:ring-[#00D88A] outline-none"
-                placeholder="Nhập tỷ lệ quản lý vốn"
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  value={capitalManagement}
+                  onChange={(e) => {
+                    const newValue = e.target.value;
+                    setCapitalManagement(newValue);
+                    if (newValue.match(/^\d+(\.\d+)?(-\d+(\.\d+)?)*$/)) {
+                      debouncedUpdateCapital(newValue);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    const newValue = e.target.value;
+                    if (newValue.match(/^\d+(\.\d+)?(-\d+(\.\d+)?)*$/)) {
+                      handleUpdateCapitalManagement(newValue);
+                    }
+                  }}
+                  disabled={isUpdatingCapital}
+                  className="w-full bg-[#0B1221] rounded-lg p-4 text-white text-sm border-0 focus:ring-1 focus:ring-[#00D88A] outline-none"
+                  placeholder="Nhập tỷ lệ quản lý vốn (e.g., 2-4-8)"
+                />
+                {isUpdatingCapital && (
+                  <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                    <div className="w-4 h-4 border-2 border-[#00D88A] border-t-transparent rounded-full animate-spin"></div>
+                  </div>
+                )}
+              </div>
+              <div className="text-xs text-white/50 mt-1">
+                Format: Numbers separated by dashes (e.g., 2-4-8)
+              </div>
             </div>
           </div>
 
@@ -486,7 +589,7 @@ const CopyExpert = () => {
                 selectedBot && !isLoading
                   ? 'bg-[#00D88A] hover:bg-opacity-90'
                   : 'bg-gray-500 cursor-not-allowed'
-              } text-white px-8 py-3 rounded-lg flex items-center gap-2 transition-colors`}
+              } text-white px-8 py-3 rounded-lg w-fit flex items-center gap-2 transition-colors`}
             >
               {isLoading ? (
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
@@ -499,7 +602,7 @@ const CopyExpert = () => {
             <button 
               onClick={handleStopTrading}
               disabled={isLoading}
-              className="bg-red-500 text-white px-8 py-3 rounded-lg flex items-center gap-2 hover:bg-opacity-90 transition-colors disabled:opacity-75 disabled:cursor-not-allowed"
+              className="bg-red-500 w-fit text-white px-8 py-3 rounded-lg flex items-center gap-2 hover:bg-opacity-90 transition-colors disabled:opacity-75 disabled:cursor-not-allowed"
             >
               {isLoading ? (
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>

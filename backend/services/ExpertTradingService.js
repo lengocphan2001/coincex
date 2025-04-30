@@ -125,6 +125,7 @@ class ExpertTradingService {
       state.isExecutingTrade = false;
       state.lastOrderStatus = null;
       state.consecutiveLosses = 0;
+      state.isFirstTrade = true; // Add flag for first trade
 
       // Save state
       this.saveState(state);
@@ -221,7 +222,7 @@ class ExpertTradingService {
         .map(candle => candle.isGreen ? 'x' : 'd')
         .join('-');
 
-      if (currentPattern === state.bot.follow_candle || state.bot.follow_candle === 'all') {
+      if (currentPattern === state.bot.follow_candle || (state.bot.follow_candle === 'all' && currentPattern.length > 0)) {
         logger.info(`[CANDLE] Pattern matched for user ${userId}! Executing trade...`);
         const tradeType = Math.random() < 0.5 ? 'short' : 'long';
         logger.info(`[TRADE] Randomly selected trade type: ${tradeType} for user ${userId}`);
@@ -348,6 +349,7 @@ class ExpertTradingService {
       logger.info(`[TRADE] Already executing trade for user ${userId}`);
       return;
     }
+
     const baseIndex = state.capitalIndex;
     const baseConsecutiveLosses = state.consecutiveLosses;
     try {
@@ -361,11 +363,19 @@ class ExpertTradingService {
         return;
       }
 
-      // Then check last completed order and update capital index
-      const lastOrder = await this.checkLastCompletedOrder(userId);
-      logger.info(`[TRADE] Processing last order status change from ${state.lastOrderStatus || 'none'} to ${lastOrder.status}`);
-      
-      this.updateCapitalIndex(state, lastOrder.status);
+      // Only check last completed order if not first trade
+      if (!state.isFirstTrade) {
+        // Then check last completed order and update capital index
+        const lastOrder = await this.checkLastCompletedOrder(userId);
+        if (lastOrder) {
+          logger.info(`[TRADE] Processing last order status change from ${state.lastOrderStatus || 'none'} to ${lastOrder.status}`);
+          this.updateCapitalIndex(state, lastOrder.status);
+        }
+      } else {
+        // If it's first trade, just log it
+        logger.info(`[TRADE] First trade for user ${userId}, starting with capitalIndex 0`);
+        state.isFirstTrade = false; // Mark that first trade is done
+      }
 
       // Calculate trade amount after potential capital index update
       const amount = this.calculateTradeAmount(state);
@@ -430,8 +440,6 @@ class ExpertTradingService {
           this.notifySubscribers(userId, { type: 'NEW_TRADE', data: orderData });
           logger.info(`[TRADE] Order created successfully for user ${userId}:`, orderData);
         }
-      } else {
-        
       }
     } catch (error) {
       state.capitalIndex = baseIndex;
