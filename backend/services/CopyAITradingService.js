@@ -536,7 +536,7 @@ class CopyAITradingService {
           const orderData = {
             user_id: userId.toString(),
             order_code: latestOrder.order_code,
-            type: prediction.type,
+            type: tradeType,
             amount: amount,
             received_usdt: 0,
             session: latestOrder.session,
