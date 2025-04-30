@@ -35,10 +35,39 @@ const CopyAi = () => {
         }
         break;
       case 'NEW_TRADE':
+        // Update both pending trades and history
         setPendingTrades(prev => [data.data, ...prev]);
+        setHistory(prev => [data.data, ...prev]);
+        break;
+      case 'ORDER_COMPLETED':
+        // Update the completed order in history
+        setHistory(prev => {
+          const updatedHistory = prev.map(order => 
+            order.order_code === data.data.order_code ? data.data : order
+          );
+          // Calculate new profit
+          const totalProfit = calculateTotalProfit(updatedHistory);
+          setCurrentProfit(totalProfit.toFixed(2));
+          return updatedHistory;
+        });
+        // Remove from pending trades
+        setPendingTrades(prev => 
+          prev.filter(order => order.order_code !== data.data.order_code)
+        );
+        // Show notification
+        const profitLoss = parseFloat(data.data.received_usdt) - parseFloat(data.data.amount);
+        toast[data.data.status === 'WIN' ? 'success' : 'error'](
+          `Order ${data.data.order_code} completed: ${profitLoss > 0 ? '+' : ''}${profitLoss.toFixed(2)} USDT`
+        );
         break;
       case 'CANDLE_PROCESSED':
         fetchTradeHistory();
+        break;
+      case 'WS_CONNECTED':
+        setWsConnected(true);
+        break;
+      case 'WS_DISCONNECTED':
+        setWsConnected(false);
         break;
       case 'ERROR':
         toast.error(data.error);
@@ -95,22 +124,31 @@ const CopyAi = () => {
 
     wsConnection.onopen = () => {
       setWsConnected(true);
+      console.log('WebSocket connected');
     };
 
     wsConnection.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      handleWebSocketMessage(data);
+      try {
+        const data = JSON.parse(event.data);
+        console.log('WebSocket message received:', data); // Debug log
+        handleWebSocketMessage(data);
+      } catch (error) {
+        console.error('Error processing WebSocket message:', error);
+      }
     };
 
     wsConnection.onclose = () => {
+      console.log('WebSocket disconnected, attempting to reconnect...');
       setWsConnected(false);
       // Try to reconnect after 5 seconds
       setTimeout(() => {
-        const newWs = new WebSocket(wsUrl);
-        newWs.onopen = wsConnection.onopen;
-        newWs.onmessage = wsConnection.onmessage;
-        newWs.onclose = wsConnection.onclose;
+        setWs(null);
       }, 5000);
+    };
+
+    wsConnection.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      toast.error('Connection error. Attempting to reconnect...');
     };
 
     return () => {

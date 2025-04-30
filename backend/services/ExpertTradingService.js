@@ -25,7 +25,6 @@ class ExpertTradingService {
   // Set token for a user
   setUserToken(userId, token) {
     this.userTokens.set(userId, token);
-    logger.info(`Token set for user ${userId}`);
   }
 
   // Get token for a user
@@ -53,14 +52,8 @@ class ExpertTradingService {
         userId: userId
       };
       this.tradingStates.set(userId, state);
-      logger.info(`[STATE] Created new state for user ${userId}`);
     }
-    logger.info(`[STATE] Current state for user ${userId}:`, {
-      capitalIndex: state.capitalIndex,
-      lastOrderStatus: state.lastOrderStatus,
-      consecutiveLosses: state.consecutiveLosses,
-      capitalManagement: state.bot?.capital_management
-    });
+
     return state;
   }
 
@@ -103,7 +96,6 @@ class ExpertTradingService {
 
   // Start trading for a user
   async startTrading(userId, bot, token) {
-    logger.info(`[START] Attempting to start trading for user ${userId}`);
 
     // Validate inputs
     if (!bot || !bot.name || !bot.follow_candle || !bot.capital_management) {
@@ -119,7 +111,6 @@ class ExpertTradingService {
     try {
       // Store token for future use
       this.setUserToken(userId, token);
-      logger.info(`[START] Token set for user ${userId}`);
 
       // Initialize trading state
       const state = this.getTradingState(userId);
@@ -146,11 +137,9 @@ class ExpertTradingService {
 
       // Save state
       this.saveState(state);
-      logger.info(`[START] Trading state initialized for user ${userId} with bot ${bot.name}`);
 
       // Start WebSocket connection
       await this.connectWebSocket(userId);
-      logger.info(`[START] Trading started successfully for user ${userId}`);
 
       return { error: 0, message: 'Trading started successfully' };
 
@@ -166,15 +155,6 @@ class ExpertTradingService {
       logger.error('[STATE] Cannot save state: invalid state object or missing userId');
       return;
     }
-    
-    logger.info(`[STATE] Saving state for user ${state.userId}:`, {
-      isTrading: state.isTrading,
-      botName: state.bot?.name,
-      capitalIndex: state.capitalIndex,
-      lastOrderStatus: state.lastOrderStatus,
-      consecutiveLosses: state.consecutiveLosses,
-      capitalManagement: state.bot?.capital_management
-    });
     
     this.tradingStates.set(state.userId, state);
   }
@@ -223,11 +203,9 @@ class ExpertTradingService {
     }
 
     try {
-      logger.info(`[CANDLE] Processing new candle for user ${userId} at ${new Date(candleTime).toISOString()}`);
       state.lastProcessedTime = candleTime;
 
       const requiredLength = state.bot.follow_candle.split('-').length;
-      logger.info(`[CANDLE] Fetching ${requiredLength} candles for pattern matching`);
 
       const response = await axios.get('https://api.binance.com/api/v3/klines', {
         params: {
@@ -254,15 +232,12 @@ class ExpertTradingService {
 
       logger.info(`[CANDLE] Current pattern: ${currentPattern}, Target pattern: ${state.bot.follow_candle}`);
 
-      if (currentPattern === state.bot.follow_candle) {
+      if (currentPattern === state.bot.follow_candle || state.bot.follow_candle === '') {
         logger.info(`[CANDLE] Pattern matched for user ${userId}! Executing trade...`);
-        // Randomly select trade type
         const tradeType = Math.random() < 0.5 ? 'short' : 'long';
         logger.info(`[TRADE] Randomly selected trade type: ${tradeType} for user ${userId}`);
         await this.executeTrade(userId, tradeType);
-      } else {
-        logger.debug(`[CANDLE] Pattern did not match for user ${userId}`);
-      }
+      } 
 
       this.notifySubscribers(userId, {
         type: 'CANDLE_PROCESSED',
@@ -298,102 +273,79 @@ class ExpertTradingService {
     }
   }
 
-  calculateTradeAmount(state) {
-    const amounts = this.getCapitalAmounts(state.bot.capital_management);
-    logger.info(`[AMOUNT] Capital amounts for user ${state.userId}: ${JSON.stringify(amounts)}, current index: ${state.capitalIndex}`);
-    const amount = amounts[state.capitalIndex];
-    logger.info(`[AMOUNT] Selected amount for user ${state.userId}: ${amount} at index ${state.capitalIndex}`);
-    return amount;
-  }
-
   getCapitalAmounts(capitalManagement) {
-    if (!capitalManagement) return [1.00];
-    // Parse amounts and ensure they are valid numbers
-    const amounts = capitalManagement.split('-')
-      .map(amount => {
-        const parsed = parseFloat(amount);
-        return isNaN(parsed) ? 1.00 : parsed;
-      });
-    return amounts;
+    if (!capitalManagement) {
+      logger.warn('[CAPITAL] No capital management provided, using default [1]');
+      return [1];
+    }
+    try {
+      // Parse amounts and ensure they are valid numbers
+      const amounts = capitalManagement.split('-')
+        .map(amount => {
+          const parsed = parseFloat(amount);
+          if (isNaN(parsed) || parsed <= 0) {
+            throw new Error(`Invalid amount: ${amount}`);
+          }
+          return parsed;
+        });
+
+      if (amounts.length === 0) {
+        logger.warn('[CAPITAL] No valid amounts found, using default [1]');
+        return [1];
+      }
+
+      logger.info('[CAPITAL] Parsed amounts:', amounts);
+      return amounts;
+    } catch (error) {
+      logger.error('[CAPITAL] Error parsing capital management:', error);
+      return [1];
+    }
   }
 
-  async checkLastCompletedOrder(userId) {
-    try {
-      const token = this.getUserToken(userId);
-      const response = await axios.get(`${this.TRADING_PROXY_URL}/proxy/history-bo`, {
-        params: {
-          status: 'completed',
-          offset: 0,
-          limit: 1
-        },
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json'
-        }
-      });
-
-      if (response.data?.data?.length > 0) {
-        const lastOrder = response.data.data[0];
-        logger.info(`[ORDER] Found last completed order for user ${userId}:`, {
-          status: lastOrder.status,
-          amount: lastOrder.amount,
-          type: lastOrder.type
-        });
-        return lastOrder;
-      }
-      logger.info(`[ORDER] No completed orders found for user ${userId}`);
-      return null;
-    } catch (error) {
-      logger.error(`[ORDER] Error checking last completed order for user ${userId}:`, error);
-      return null;
+  calculateTradeAmount(state) {
+    if (!state || !state.bot?.capital_management) {
+      logger.warn('[AMOUNT] No capital management found, using default amount 1');
+      return 1;
     }
+
+    const amounts = this.getCapitalAmounts(state.bot.capital_management);
+    
+    // Ensure index is within bounds
+    if (state.capitalIndex >= amounts.length) {
+      state.capitalIndex = amounts.length - 1;
+      logger.warn(`[AMOUNT] Capital index out of bounds, capping at ${state.capitalIndex}`);
+    }
+
+    const amount = amounts[state.capitalIndex % amounts.length];
+    
+    logger.info('[AMOUNT] Trade amount calculation:', {
+      userId: state.userId,
+      capitalIndex: state.capitalIndex,
+      amounts: amounts,
+      selectedAmount: amount,
+      consecutiveLosses: state.consecutiveLosses
+    });
+
+    return amount;
   }
 
   updateCapitalIndex(state, orderStatus) {
     if (!state || !state.bot?.capital_management) {
-      logger.error(`[CAPITAL] Invalid state or missing capital management for user ${state?.userId}`);
       return;
     }
 
-    const amounts = this.getCapitalAmounts(state.bot.capital_management);
-    logger.info(`[CAPITAL] Updating index - Current state:`, {
-      userId: state.userId,
-      currentIndex: state.capitalIndex,
-      newStatus: orderStatus,
-      previousStatus: state.lastOrderStatus,
-      amounts: amounts
-    });
-    logger.info(`[CAPITAL] Amount lengths:`, {
-      amountsLength: amounts.length,
-    });
-    if (orderStatus === 'WIN') {
-      state.capitalIndex = 0;
-      state.consecutiveLosses = 0;
-      logger.info(`[CAPITAL] WIN - Reset index to 0 for user ${state.userId}`);
-    } else if (orderStatus === 'LOSS') {
-      if (state.capitalIndex >= amounts.length - 1) {
-        logger.info(`[CAPITAL] LOSS - At max index ${state.capitalIndex}, maintaining position for user ${state.userId}`);
-      } else {
+    if (orderStatus === 'LOSS') {
         state.capitalIndex++;
         state.consecutiveLosses++;
-        logger.info(`[CAPITAL] LOSS - Increased index to ${state.capitalIndex} for user ${state.userId}`);
-      }
+    } else if (orderStatus === 'WIN') {
+      state.capitalIndex = 0;
+      state.consecutiveLosses = 0;
     }
-    
+
     state.lastOrderStatus = orderStatus;
-    // Save state immediately after updating
     this.saveState(state);
-    
-    logger.info(`[CAPITAL] Update complete:`, {
-      userId: state.userId,
-      newIndex: state.capitalIndex,
-      newAmount: amounts[state.capitalIndex],
-      status: orderStatus,
-      consecutiveLosses: state.consecutiveLosses
-    });
   }
 
-  // Execute a trade
   async executeTrade(userId, tradeType) {
     logger.info(`[TRADE] Starting trade execution for user ${userId}, type: ${tradeType}`);
     const state = this.getTradingState(userId);
@@ -407,7 +359,8 @@ class ExpertTradingService {
       logger.info(`[TRADE] Already executing trade for user ${userId}`);
       return;
     }
-
+    const baseIndex = state.capitalIndex;
+    const baseConsecutiveLosses = state.consecutiveLosses;
     try {
       state.isExecutingTrade = true;
       await new Promise(resolve => setTimeout(resolve, 3000));
@@ -416,28 +369,18 @@ class ExpertTradingService {
       const hasPending = await this.hasPendingOrders(userId);
       if (hasPending) {
         logger.info(`[TRADE] Skipping trade - pending order exists for user ${userId}`);
-        state.isExecutingTrade = false;
         return;
       }
 
       // Then check last completed order and update capital index
       const lastOrder = await this.checkLastCompletedOrder(userId);
-      if (lastOrder) {
-        logger.info(`[TRADE] Processing last order - Previous status: ${state.lastOrderStatus}, New status: ${lastOrder.status}`);
-        if (lastOrder.status !== state.lastOrderStatus) {
-          logger.info(`[TRADE] Status changed from ${state.lastOrderStatus || 'none'} to ${lastOrder.status} - Updating capital index`);
-          this.updateCapitalIndex(state, lastOrder.status);
-          // Save state immediately after updating capital index
-          this.saveState(state);
-        }
-      }
-
-      // Get fresh state after potential update
-      const amounts = this.getCapitalAmounts(state.bot.capital_management);
-      logger.info(`[TRADE] Current state before trade - Index: ${state.capitalIndex}, Amounts: ${JSON.stringify(amounts)}`);
+      logger.info(`[TRADE] Processing last order status change from ${state.lastOrderStatus || 'none'} to ${lastOrder.status}`);
       
+      this.updateCapitalIndex(state, lastOrder.status);
+
+      // Calculate trade amount after potential capital index update
       const amount = this.calculateTradeAmount(state);
-      logger.info(`[TRADE] Calculated trade amount: ${amount} USDT at index ${state.capitalIndex}`);
+      logger.info(`[TRADE] Executing trade: { symbol: 'BTCUSDT', type: ${tradeType}, amount: ${amount} }`);
 
       const token = this.getUserToken(userId);
       const tradeData = {
@@ -446,7 +389,6 @@ class ExpertTradingService {
         amount: amount
       };
 
-      logger.info(`[TRADE] Executing trade:`, tradeData);
       const response = await axios.post(
         `${this.TRADING_PROXY_URL}/proxy/trading-bo`,
         tradeData,
@@ -497,9 +439,14 @@ class ExpertTradingService {
           );
           
           this.notifySubscribers(userId, { type: 'NEW_TRADE', data: orderData });
+          logger.info(`[TRADE] Order created successfully for user ${userId}:`, orderData);
         }
+      } else {
+        
       }
     } catch (error) {
+      state.capitalIndex = baseIndex;
+      state.consecutiveLosses = baseConsecutiveLosses;
       logger.error(`[TRADE] Error executing trade:`, error);
       this.notifySubscribers(userId, { 
         type: 'ERROR', 
@@ -507,14 +454,44 @@ class ExpertTradingService {
       });
     } finally {
       state.isExecutingTrade = false;
-      // Save state at the end of trade execution
       this.saveState(state);
+    }
+  }
+
+  async checkLastCompletedOrder(userId) {
+    try {
+      const token = this.getUserToken(userId);
+      const response = await axios.get(`${this.TRADING_PROXY_URL}/proxy/history-bo`, {
+        params: {
+          status: 'completed',
+          offset: 0,
+          limit: 1
+        },
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (response.data?.data?.length > 0) {
+        const lastOrder = response.data.data[0];
+        logger.info(`[ORDER] Found last completed order for user ${userId}:`, {
+          status: lastOrder.status,
+          amount: lastOrder.amount,
+          type: lastOrder.type
+        });
+        return lastOrder;
+      }
+      logger.info(`[ORDER] No completed orders found for user ${userId}`);
+      return null;
+    } catch (error) {
+      logger.error(`[ORDER] Error checking last completed order for user ${userId}:`, error);
+      return null;
     }
   }
 
   // Connect to WebSocket for a user
   async connectWebSocket(userId) {
-    logger.info(`[WS] Attempting to connect WebSocket for user ${userId}`);
     
     // Clear any existing reconnect timer
     if (this.wsReconnectTimers.has(userId)) {
@@ -567,7 +544,6 @@ class ExpertTradingService {
       }, 10000);
 
       ws.on('open', () => {
-        logger.info(`[WS] WebSocket connected for user ${userId}`);
         clearTimeout(connectionTimeout);
         this.wsConnections.set(userId, ws);
         this.reconnectAttempts.set(userId, 0); // Reset attempts on successful connection
@@ -647,7 +623,6 @@ class ExpertTradingService {
 
       ws.on('pong', () => {
         // Connection is alive
-        logger.debug(`[WS] Received pong from server for user ${userId}`);
       });
 
       // Clean up interval on close

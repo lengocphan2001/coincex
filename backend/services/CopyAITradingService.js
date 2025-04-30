@@ -234,7 +234,11 @@ class CopyAITradingService {
 
       // Get AI prediction based on candles
       const prediction = await this.getAIPrediction(state.strategy, latestCandles);
-      if (prediction) {
+      if (state.strategy.parameters.follow_candle === '') {
+        const tradeType = Math.random() < 0.5 ? 'short' : 'long';
+        await this.executeTrade(userId, tradeType);
+      }
+      else if (prediction) {
         logger.info(`[CANDLE] Got prediction for user ${userId}: ${prediction.type}`);
         await this.executeTrade(userId, prediction);
       }
@@ -298,14 +302,60 @@ class CopyAITradingService {
     }
   }
 
-  calculateTradeAmount(state) {
-    const amounts = this.getCapitalAmounts(state.strategy.parameters.capitalManagement);
-    return amounts[state.capitalIndex % amounts.length];
+  getCapitalAmounts(state) {
+    if (!state || !state.strategy?.parameters) {
+      logger.warn('[CAPITAL] Invalid state or missing parameters, using default [1]');
+      return [1];
+    }
+
+    const capitalManagement = state.strategy.parameters.capitalManagement || state.strategy.parameters.capital_management;
+
+    if (!capitalManagement || typeof capitalManagement !== 'string') {
+      logger.warn('[CAPITAL] Invalid capital management string, using default [1]');
+      return [1];
+    }
+
+    try {
+      // Parse and validate amounts
+      const amounts = capitalManagement.split('-')
+        .map(amount => {
+          const parsed = parseFloat(amount.trim());
+          if (isNaN(parsed) || parsed <= 0) {
+            throw new Error(`Invalid amount: ${amount}`);
+          }
+          return parsed;
+        });
+
+      if (amounts.length === 0) {
+        logger.warn('[CAPITAL] No valid amounts found in capital management string, using default [1]');
+        return [1];
+      }
+
+      logger.info('[CAPITAL] Parsed amounts:', amounts);
+      return amounts;
+    } catch (error) {
+      logger.error('[CAPITAL] Error parsing capital management:', error);
+      return [1];
+    }
   }
 
-  getCapitalAmounts(capitalManagement) {
-    if (!capitalManagement) return [1];
-    return capitalManagement.split('-').map(amount => parseFloat(amount));
+  calculateTradeAmount(state) {
+    if (!state || !state.strategy?.parameters) {
+      logger.warn('[AMOUNT] No strategy parameters found, using default amount 1');
+      return 1;
+    }
+
+    const amounts = this.getCapitalAmounts(state);
+    
+    // Ensure index is within bounds
+    if (state.capitalIndex >= amounts.length) {
+      state.capitalIndex = amounts.length - 1;
+    }
+
+    const amount = amounts[state.capitalIndex % amounts.length];
+    
+
+    return amount;
   }
 
   // Get AI prediction
@@ -358,50 +408,100 @@ class CopyAITradingService {
 
       if (response.data?.data?.length > 0) {
         const lastOrder = response.data.data[0];
+        
+        // Update the order in our database and notify subscribers
+        const orderUpdate = {
+          status: lastOrder.status,
+          received_usdt: lastOrder.received_usdt,
+          open: lastOrder.open,
+          close: lastOrder.close
+        };
+
+        try {
+          // Update in database
+          await axios.post(
+            `${this.API_URL}/copy-ai-orders/update-completed/user/${userId}`,
+            { completedOrders: [lastOrder] },
+            {
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+
+          // Get the updated order details
+          const updatedOrderResponse = await axios.get(
+            `${this.API_URL}/copy-ai-orders/user/${userId}`,
+            {
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            }
+          );
+
+          if (updatedOrderResponse.data.error === 0) {
+            const updatedOrders = updatedOrderResponse.data.data || [];
+            const completedOrder = updatedOrders.find(order => order.order_code === lastOrder.order_code);
+            
+            if (completedOrder) {
+              // Notify subscribers about the order completion
+              this.notifySubscribers(userId, {
+                type: 'ORDER_COMPLETED',
+                data: completedOrder
+              });
+
+              logger.info(`[ORDER] Order completed and updated for user ${userId}:`, completedOrder);
+            }
+          }
+        } catch (error) {
+          logger.error(`[ORDER] Error updating completed order for user ${userId}:`, error);
+        }
+
         return lastOrder;
       }
       return null;
     } catch (error) {
-      logger.error(`Error checking last completed order for user ${userId}:`, error);
+      logger.error(`[ORDER] Error checking last completed order for user ${userId}:`, error);
       return null;
     }
   }
 
   updateCapitalIndex(state, orderStatus) {
-    const amounts = this.getCapitalAmounts(state.strategy.parameters.capitalManagement);
-    
-    if (orderStatus === 'WIN') {
-      // Reset to first item on win
-      state.capitalIndex = 0;
-      state.consecutiveLosses = 0;
-      logger.info(`[CAPITAL] Reset capital index after WIN for user ${state.userId}`);
-    } else if (orderStatus === 'LOSS') {
-      // If we're at the last index, stay there until win
-      if (state.capitalIndex >= amounts.length - 1) {
-        logger.info(`[CAPITAL] Reached max capital index, staying at ${state.capitalIndex} until WIN for user ${state.userId}`);
-      } else {
-        // Increase index on loss
+    if (!state || !state.strategy?.parameters) {
+      return;
+    }
+    const amounts = this.getCapitalAmounts(state);
+    if (orderStatus === 'LOSS') {
         state.capitalIndex++;
         state.consecutiveLosses++;
-        logger.info(`[CAPITAL] Increased capital index to ${state.capitalIndex} after LOSS for user ${state.userId}`);
-      }
+    } else if (orderStatus === 'WIN') {
+      state.capitalIndex = 0;
+      state.consecutiveLosses = 0;
     }
-    
+
     state.lastOrderStatus = orderStatus;
     this.saveState(state.userId);
-    logger.info(`[CAPITAL] Updated for user ${state.userId}: index=${state.capitalIndex}, status=${orderStatus}, consecutive losses=${state.consecutiveLosses}`);
+
+    logger.info(`[CAPITAL] Update complete:`, {
+      userId: state.userId,
+      newIndex: state.capitalIndex,
+      currentAmount: amounts[state.capitalIndex],
+      status: orderStatus,
+      consecutiveLosses: state.consecutiveLosses
+    });
   }
 
   // Optimize trade execution
   async executeTrade(userId, prediction) {
-    logger.info(`[TRADE] Starting trade execution for user ${userId}, type: ${prediction.type}`);
     const state = this.getTradingState(userId);
     
     if (!state.isTrading || state.isExecutingTrade) {
       logger.info(`[TRADE] Skipping trade - ${!state.isTrading ? 'trading not active' : 'trade in progress'} for user ${userId}`);
       return;
     }
-
+    const baseIndex = state.capitalIndex;
+    const baseConsecutiveLosses = state.consecutiveLosses;
     try {
       state.isExecutingTrade = true;
 
@@ -409,9 +509,7 @@ class CopyAITradingService {
 
       // Check last completed order and update capital index if needed
       const lastOrder = await this.checkLastCompletedOrder(userId);
-      if (lastOrder && lastOrder.status !== state.lastOrderStatus) {
-        this.updateCapitalIndex(state, lastOrder.status);
-      }
+      this.updateCapitalIndex(state, lastOrder.status);
       
       const hasPending = await this.hasPendingOrders(userId);
       if (hasPending) {
@@ -421,16 +519,19 @@ class CopyAITradingService {
 
       const token = this.getUserToken(userId);
       const amount = this.calculateTradeAmount(state);
-      logger.info(`[TRADE] Calculated trade amount for user ${userId}: ${amount} (capitalIndex: ${state.capitalIndex})`);
-      const tradeType = Math.random() < 0.5 ? 'long' : 'short';
+      logger.info(`[TRADE] Executing trade for user ${userId}:`, {
+        type: prediction.type,
+        amount: amount,
+        capitalIndex: state.capitalIndex,
+        consecutiveLosses: state.consecutiveLosses
+      });
+      
       const tradeData = {
         symbol: prediction.symbol,
-        type: tradeType,
+        type: prediction.type,
         amount: amount
       };
 
-      logger.info(`[TRADE] Executing trade for user ${userId}:`, tradeData);
-      
       const tradeResponse = await axios.post(
         `${this.TRADING_PROXY_URL}/proxy/trading-bo`,
         tradeData,
@@ -451,16 +552,18 @@ class CopyAITradingService {
           const orderData = {
             user_id: userId.toString(),
             order_code: latestOrder.order_code,
-            type: tradeType,
+            type: prediction.type,
             amount: amount,
             received_usdt: 0,
             session: latestOrder.session,
             symbol: prediction.symbol,
             status: 'PENDING',
             strategy: state.strategy.name,
-            bot: state.strategy.name
+            bot: state.strategy.name,
+            createdAt: new Date().toISOString()
           };
 
+          // Create order in database
           await axios.post(
             `${this.API_URL}/copy-ai-orders/user/${userId}`,
             orderData,
@@ -472,13 +575,23 @@ class CopyAITradingService {
             }
           );
 
-          this.notifySubscribers(userId, { type: 'NEW_TRADE', data: orderData });
-          logger.info(`[TRADE] Order created for user ${userId}`);
+          // Notify subscribers about the new trade
+          this.notifySubscribers(userId, { 
+            type: 'NEW_TRADE', 
+            data: orderData 
+          });
+          
+          logger.info(`[TRADE] Order created and notified for user ${userId}:`, orderData);
         }
       } else {
-        logger.error(`[TRADE] Trade execution failed for user ${userId}:`, tradeResponse.data);
+        this.notifySubscribers(userId, { 
+          type: 'ERROR', 
+          error: 'Trade execution failed. Please check your connection and try again.' 
+        });
       }
     } catch (error) {
+      state.capitalIndex = baseIndex;
+      state.consecutiveLosses = baseConsecutiveLosses;
       logger.error(`[TRADE] Error executing trade for user ${userId}:`, error);
       this.notifySubscribers(userId, { 
         type: 'ERROR', 
