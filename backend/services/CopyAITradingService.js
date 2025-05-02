@@ -48,7 +48,8 @@ class CopyAITradingService {
         lastProcessedTime: null,
         isExecutingTrade: false,
         lastOrderStatus: null,
-        consecutiveLosses: 0
+        consecutiveLosses: 0,
+        firstTrade: true // Add flag for first trade
       });
     }
     return this.tradingStates.get(userId);
@@ -133,12 +134,15 @@ class CopyAITradingService {
         return { error: 1, message: 'Invalid pattern format. Pattern must be in the format: x-d-x or similar' };
       }
 
-      // Update trading state
+      // Update trading state with reset capitalIndex
       state.strategy = strategy;
       state.isTrading = true;
       state.lastProcessedTime = null;
       state.capitalIndex = 0;
+      state.consecutiveLosses = 0;
       state.isExecutingTrade = false;
+      state.lastOrderStatus = null;
+      state.firstTrade = true; // Set first trade flag to true
 
       // Save state
       this.saveState(userId);
@@ -346,11 +350,6 @@ class CopyAITradingService {
     }
 
     const amounts = this.getCapitalAmounts(state);
-    
-    // Ensure index is within bounds
-    if (state.capitalIndex >= amounts.length) {
-      state.capitalIndex = amounts.length - 1;
-    }
 
     const amount = amounts[state.capitalIndex % amounts.length];
     
@@ -391,100 +390,6 @@ class CopyAITradingService {
     }
   }
 
-  async checkLastCompletedOrder(userId) {
-    try {
-      const token = this.getUserToken(userId);
-      const response = await axios.get(`${this.TRADING_PROXY_URL}/proxy/history-bo`, {
-        params: {
-          status: 'completed',
-          offset: 0,
-          limit: 1
-        },
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json'
-        }
-      });
-
-      if (response.data?.data?.length > 0) {
-        const lastOrder = response.data.data[0];
-        
-        // Update the order in our database and notify subscribers
-        const orderUpdate = {
-          status: lastOrder.status,
-          received_usdt: lastOrder.received_usdt,
-          open: lastOrder.open,
-          close: lastOrder.close
-        };
-
-        try {
-          // Update in database
-          await axios.post(
-            `${this.API_URL}/copy-ai-orders/update-completed/user/${userId}`,
-            { completedOrders: [lastOrder] },
-            {
-              headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-
-          // Get the updated order details
-          const updatedOrderResponse = await axios.get(
-            `${this.API_URL}/copy-ai-orders/user/${userId}`,
-            {
-              headers: {
-                'Authorization': `Bearer ${token}`
-              }
-            }
-          );
-
-          if (updatedOrderResponse.data.error === 0) {
-            const updatedOrders = updatedOrderResponse.data.data || [];
-            const completedOrder = updatedOrders.find(order => order.order_code === lastOrder.order_code);
-            
-            if (completedOrder) {
-              // Notify subscribers about the order completion
-              this.notifySubscribers(userId, {
-                type: 'ORDER_COMPLETED',
-                data: completedOrder
-              });
-
-              logger.info(`[ORDER] Order completed and updated for user ${userId}:`, completedOrder);
-            }
-          }
-        } catch (error) {
-          logger.error(`[ORDER] Error updating completed order for user ${userId}:`, error);
-        }
-
-        return lastOrder;
-      }
-      return null;
-    } catch (error) {
-      logger.error(`[ORDER] Error checking last completed order for user ${userId}:`, error);
-      return null;
-    }
-  }
-
-  updateCapitalIndex(state, orderStatus) {
-    if (!state || !state.strategy?.parameters) {
-      return;
-    }
-    const amounts = this.getCapitalAmounts(state);
-    if (orderStatus === 'LOSS') {
-        state.capitalIndex++;
-        state.consecutiveLosses++;
-    } else if (orderStatus === 'WIN') {
-      state.capitalIndex = 0;
-      state.consecutiveLosses = 0;
-    }
-
-    state.lastOrderStatus = orderStatus;
-    this.saveState(state.userId);
-  }
-
-  // Optimize trade execution
   async executeTrade(userId, tradeType) {
     const state = this.getTradingState(userId);
     
@@ -492,6 +397,7 @@ class CopyAITradingService {
       logger.info(`[TRADE] Skipping trade - ${!state.isTrading ? 'trading not active' : 'trade in progress'} for user ${userId}`);
       return;
     }
+
     const baseIndex = state.capitalIndex;
     const baseConsecutiveLosses = state.consecutiveLosses;
     try {
@@ -500,7 +406,15 @@ class CopyAITradingService {
       await new Promise(resolve => setTimeout(resolve, 3000));
 
       const lastOrder = await this.checkLastCompletedOrder(userId);
-      this.updateCapitalIndex(state, lastOrder.status);
+      
+      // Only update capital index if it's not the first trade
+      if (!state.firstTrade) {
+        this.updateCapitalIndex(state, lastOrder?.status);
+      } else {
+        // For first trade, keep capitalIndex at 0
+        state.capitalIndex = 0;
+        state.firstTrade = false; // Set first trade flag to false after first trade
+      }
       
       const hasPending = await this.hasPendingOrders(userId);
       if (hasPending) {
@@ -547,8 +461,8 @@ class CopyAITradingService {
             createdAt: new Date().toISOString()
           };
 
-          // Create order in database
-          await axios.post(
+          // Create order in database immediately
+          const createOrderResponse = await axios.post(
             `${this.API_URL}/copy-ai-orders/user/${userId}`,
             orderData,
             {
@@ -559,12 +473,16 @@ class CopyAITradingService {
             }
           );
 
-          // Notify subscribers about the new trade
-          this.notifySubscribers(userId, { 
-            type: 'NEW_TRADE', 
-            data: orderData 
-          });
-          
+          if (createOrderResponse.data.error === 0) {
+            // Notify subscribers about the new trade
+            this.notifySubscribers(userId, { 
+              type: 'NEW_TRADE', 
+              data: orderData 
+            });
+
+            // Start monitoring the order status
+            this.monitorOrderStatus(userId, latestOrder.order_code);
+          }
         }
       } else {
         state.capitalIndex = baseIndex;
@@ -585,6 +503,148 @@ class CopyAITradingService {
     } finally {
       state.isExecutingTrade = false;
     }
+  }
+
+  // Add new method to monitor order status
+  async monitorOrderStatus(userId, orderCode) {
+    const token = this.getUserToken(userId);
+    const checkInterval = 5000; // Check every 5 seconds
+    const maxAttempts = 12; // Maximum 1 minute of checking
+
+    let attempts = 0;
+    const checkOrder = async () => {
+      try {
+        const response = await axios.get(`${this.TRADING_PROXY_URL}/proxy/history-bo`, {
+          params: {
+            order_code: orderCode,
+            status: 'completed'
+          },
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/json'
+          }
+        });
+
+        if (response.data?.data?.length > 0) {
+          const completedOrder = response.data.data[0];
+          
+          // Update the order in database immediately
+          await axios.post(
+            `${this.API_URL}/copy-ai-orders/update-completed/user/${userId}`,
+            { completedOrders: [completedOrder] },
+            {
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+
+          // Notify subscribers about the order completion
+          this.notifySubscribers(userId, {
+            type: 'ORDER_COMPLETED',
+            data: completedOrder
+          });
+
+          logger.info(`[ORDER] Order completed and updated for user ${userId}:`, completedOrder);
+          return true;
+        }
+
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(checkOrder, checkInterval);
+        }
+      } catch (error) {
+        logger.error(`[ORDER] Error monitoring order status for user ${userId}:`, error);
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(checkOrder, checkInterval);
+        }
+      }
+    };
+
+    checkOrder();
+  }
+
+  async checkLastCompletedOrder(userId) {
+    try {
+      const token = this.getUserToken(userId);
+      const response = await axios.get(`${this.TRADING_PROXY_URL}/proxy/history-bo`, {
+        params: {
+          status: 'completed',
+          offset: 0,
+          limit: 1
+        },
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (response.data?.data?.length > 0) {
+        const lastOrder = response.data.data[0];
+        
+        // Update the order in database immediately
+        await axios.post(
+          `${this.API_URL}/copy-ai-orders/update-completed/user/${userId}`,
+          { completedOrders: [lastOrder] },
+          {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+
+        // Get the updated order details
+        const updatedOrderResponse = await axios.get(
+          `${this.API_URL}/copy-ai-orders/user/${userId}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          }
+        );
+
+        if (updatedOrderResponse.data.error === 0) {
+          const updatedOrders = updatedOrderResponse.data.data || [];
+          const completedOrder = updatedOrders.find(order => order.order_code === lastOrder.order_code);
+          
+          if (completedOrder) {
+            // Notify subscribers about the order completion
+            this.notifySubscribers(userId, {
+              type: 'ORDER_COMPLETED',
+              data: completedOrder
+            });
+
+            logger.info(`[ORDER] Order completed and updated for user ${userId}:`, completedOrder);
+          }
+        }
+
+        return lastOrder;
+      }
+      return null;
+    } catch (error) {
+      logger.error(`[ORDER] Error checking last completed order for user ${userId}:`, error);
+      return null;
+    }
+  }
+
+  updateCapitalIndex(state, orderStatus) {
+    if (!state || !state.strategy?.parameters) {
+      return;
+    }
+    const amounts = this.getCapitalAmounts(state);
+    if (orderStatus === 'LOSS') {
+        state.capitalIndex++;
+        state.consecutiveLosses++;
+    } else if (orderStatus === 'WIN') {
+      state.capitalIndex = 0;
+      state.consecutiveLosses = 0;
+    }
+
+    state.lastOrderStatus = orderStatus;
+    this.saveState(state.userId);
   }
 
   // Connect to WebSocket for a user

@@ -35,39 +35,44 @@ const CopyAi = () => {
         }
         break;
       case 'NEW_TRADE':
-        // Update both pending trades and history
+        // Update both pending trades and history immediately
         setPendingTrades(prev => [data.data, ...prev]);
         setHistory(prev => [data.data, ...prev]);
+        // Show immediate notification
+        toast.info(`New trade started: ${data.data.type.toUpperCase()} ${data.data.amount} USDT`);
         break;
       case 'ORDER_COMPLETED':
-        // Update the completed order in history
+        // Update the completed order in history immediately
         setHistory(prev => {
           const updatedHistory = prev.map(order => 
             order.order_code === data.data.order_code ? data.data : order
           );
-          // Calculate new profit
+          // Calculate new profit immediately
           const totalProfit = calculateTotalProfit(updatedHistory);
           setCurrentProfit(totalProfit.toFixed(2));
           return updatedHistory;
         });
-        // Remove from pending trades
+        // Remove from pending trades immediately
         setPendingTrades(prev => 
           prev.filter(order => order.order_code !== data.data.order_code)
         );
-        // Show notification
+        // Show immediate notification with profit/loss
         const profitLoss = parseFloat(data.data.received_usdt) - parseFloat(data.data.amount);
         toast[data.data.status === 'WIN' ? 'success' : 'error'](
           `Order ${data.data.order_code} completed: ${profitLoss > 0 ? '+' : ''}${profitLoss.toFixed(2)} USDT`
         );
         break;
       case 'CANDLE_PROCESSED':
+        // Fetch latest trade history
         fetchTradeHistory();
         break;
       case 'WS_CONNECTED':
         setWsConnected(true);
+        toast.success('Connected to trading server');
         break;
       case 'WS_DISCONNECTED':
         setWsConnected(false);
+        toast.warning('Disconnected from trading server. Attempting to reconnect...');
         break;
       case 'ERROR':
         toast.error(data.error);
@@ -158,7 +163,7 @@ const CopyAi = () => {
     };
   }, []); // Run only once on mount
 
-  // Fetch trade history
+  // Fetch trade history with immediate updates
   const fetchTradeHistory = async () => {
     try {
       const token = localStorage.getItem('token');
@@ -183,7 +188,7 @@ const CopyAi = () => {
 
       // Get completed orders
       const historyResponse = await axios.get(`${API_URL2}/proxy/history-bo`, {
-              params: {
+        params: {
           status: 'completed',
           offset: 0,
           limit: 10
@@ -195,6 +200,7 @@ const CopyAi = () => {
       });
 
       if (historyResponse.data?.data) {
+        // Update completed orders in database
         await axios.post(
           `${API_URL}/copy-ai-orders/update-completed/user/${userId}`,
           {
@@ -208,6 +214,7 @@ const CopyAi = () => {
           }
         );
 
+        // Get updated orders from our database
         const ordersResponse = await axios.get(
           `${API_URL}/copy-ai-orders/user/${userId}`,
           {
@@ -325,7 +332,7 @@ const CopyAi = () => {
     localStorage.setItem('selectedStrategy', JSON.stringify(formattedStrategy));
   };
 
-  // Start trading
+  // Start trading with immediate feedback
   const startTrading = async () => {
     if (!selectedStrategy) return;
     
@@ -334,7 +341,6 @@ const CopyAi = () => {
       const token = localStorage.getItem('token');
       const userId = localStorage.getItem('userId');
 
-      // Ensure strategy object has required structure and use consistent camelCase
       const tradingStrategy = {
         name: selectedStrategy.name,
         parameters: {
@@ -344,8 +350,6 @@ const CopyAi = () => {
           ...selectedStrategy.parameters
         }
       };
-
-      console.log('Starting trading with strategy:', tradingStrategy); // Debug log
 
       const response = await axios.post(
         `${API_URL}/copy-ai/users/${userId}/start`,
@@ -361,20 +365,20 @@ const CopyAi = () => {
       if (response.data.error === 0) {
         setIsTrading(true);
         toast.success('Trading started successfully');
+        // Fetch latest state immediately
         await fetchTradeHistory();
       } else {
         toast.error(response.data.message || 'Failed to start trading');
-        console.error('Trading start error:', response.data);
       }
     } catch (error) {
-      console.error('Error starting trading:', error.response?.data || error);
+      console.error('Error starting trading:', error);
       toast.error(error.response?.data?.message || 'Failed to start trading. Please try again.');
     } finally {
       setStartingTrade(false);
     }
   };
 
-  // Stop trading
+  // Stop trading with immediate feedback
   const stopTrading = async () => {
     try {
       setStoppingTrade(true);
@@ -395,7 +399,8 @@ const CopyAi = () => {
       if (response.data.error === 0) {
         setIsTrading(false);
         toast.success('Trading stopped successfully');
-        await fetchTradeHistory(); // Fetch latest state
+        // Fetch latest state immediately
+        await fetchTradeHistory();
       } else {
         toast.error(response.data.message || 'Failed to stop trading');
       }
